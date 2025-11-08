@@ -233,3 +233,56 @@ def test_redeploy_terminate_fails_continues(deployer: Deployer, tmp_path: Path) 
 
     assert result == "i-new"
     deployer.deploy.assert_called_once()
+
+
+def test_get_status_with_instance_id(deployer: Deployer) -> None:
+    """Test getting status with instance ID."""
+    from datetime import datetime
+
+    mock_details = {
+        "instance_id": "i-12345",
+        "state": "running",
+        "instance_type": "t3.small",
+        "public_ip": "1.2.3.4",
+        "private_ip": "10.0.0.1",
+        "launch_time": datetime(2024, 1, 1),
+        "name": "test-instance",
+    }
+    deployer.ec2_manager.get_instance_details = MagicMock(return_value=mock_details)
+
+    result = deployer.get_status("i-12345")
+
+    assert result == mock_details
+    deployer.ec2_manager.get_instance_details.assert_called_once_with("i-12345")
+
+
+def test_get_status_by_name(deployer: Deployer) -> None:
+    """Test getting status by instance name."""
+    from datetime import datetime
+
+    mock_details = {
+        "instance_id": "i-12345",
+        "state": "running",
+        "instance_type": "t3.small",
+        "public_ip": "1.2.3.4",
+        "private_ip": "10.0.0.1",
+        "launch_time": datetime(2024, 1, 1),
+        "name": "test-instance",
+    }
+    deployer.ec2_manager.find_instances_by_name = MagicMock(return_value=["i-12345"])
+    deployer.ec2_manager.get_instance_details = MagicMock(return_value=mock_details)
+
+    result = deployer.get_status()
+
+    assert result == mock_details
+    deployer.ec2_manager.find_instances_by_name.assert_called_once_with("test-instance")
+    deployer.ec2_manager.get_instance_details.assert_called_once_with("i-12345")
+
+
+def test_get_status_no_instance_found(deployer: Deployer) -> None:
+    """Test getting status when no instance found."""
+    deployer.ec2_manager.find_instances_by_name = MagicMock(return_value=[])
+
+    result = deployer.get_status()
+
+    assert result is None

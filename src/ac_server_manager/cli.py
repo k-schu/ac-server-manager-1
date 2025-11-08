@@ -191,5 +191,63 @@ def redeploy(
         sys.exit(1)
 
 
+@main.command()
+@click.option("--instance-id", help="Instance ID to check (if not provided, uses instance name)")
+@click.option("--instance-name", default="ac-server-instance", help="Instance name tag")
+@click.option("--region", default="us-east-1", help="AWS region")
+def status(instance_id: Optional[str], instance_name: str, region: str) -> None:
+    """Check the status of an AC server instance.
+
+    Shows instance state, connection information, and acstuff.ru link for joining.
+
+    Example:
+        ac-server-manager status
+        ac-server-manager status --instance-id i-1234567890abcdef0
+    """
+    from .config import AC_SERVER_TCP_PORT
+
+    config = ServerConfig(aws_region=region, instance_name=instance_name)
+    deployer = Deployer(config)
+
+    click.echo("Checking AC server status...")
+    details = deployer.get_status(instance_id)
+
+    if not details:
+        click.echo(click.style("✗ No instance found", fg="red", bold=True))
+        sys.exit(1)
+
+    # Display instance information
+    click.echo(click.style("\n✓ Instance found", fg="green", bold=True))
+    click.echo(f"\nInstance ID: {details['instance_id']}")
+    click.echo(f"Name: {details.get('name', 'N/A')}")
+    click.echo(
+        f"State: {click.style(details['state'], fg='green' if details['state'] == 'running' else 'yellow', bold=True)}"
+    )
+    click.echo(f"Instance Type: {details['instance_type']}")
+    click.echo(f"Launch Time: {details['launch_time']}")
+
+    # Display connection information if instance is running
+    if details["state"] == "running" and details.get("public_ip"):
+        public_ip = details["public_ip"]
+        click.echo(f"\n{click.style('Connection Information:', fg='cyan', bold=True)}")
+        click.echo(f"Public IP: {public_ip}")
+        click.echo(f"Game Port: {AC_SERVER_TCP_PORT} (UDP/TCP)")
+        click.echo(f"Direct Connect: {public_ip}:{AC_SERVER_TCP_PORT}")
+
+        # Generate acstuff.ru link
+        acstuff_url = f"https://acstuff.ru/s/q:race@{public_ip}:{AC_SERVER_TCP_PORT}"
+        click.echo(f"\n{click.style('Join Server:', fg='cyan', bold=True)}")
+        click.echo(f"acstuff.ru link: {acstuff_url}")
+        click.echo("\nOpen this link in your browser to join the server via Content Manager")
+    elif details["state"] == "running":
+        click.echo(
+            click.style("\n⚠ Instance is running but no public IP assigned yet", fg="yellow")
+        )
+        click.echo("Wait a few moments and check status again")
+    else:
+        click.echo(click.style(f"\n⚠ Instance is {details['state']}", fg="yellow"))
+        click.echo("Start the instance with: ac-server-manager start")
+
+
 if __name__ == "__main__":
     main()

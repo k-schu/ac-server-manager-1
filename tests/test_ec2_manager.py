@@ -193,3 +193,81 @@ def test_find_instances_by_name_none_found(ec2_manager: EC2Manager) -> None:
     result = ec2_manager.find_instances_by_name("test-instance")
 
     assert result == []
+
+
+def test_get_instance_details_success(ec2_manager: EC2Manager) -> None:
+    """Test getting instance details successfully."""
+    from datetime import datetime
+
+    ec2_manager.ec2_client.describe_instances = MagicMock(
+        return_value={
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": "i-12345",
+                            "State": {"Name": "running"},
+                            "InstanceType": "t3.small",
+                            "PublicIpAddress": "1.2.3.4",
+                            "PrivateIpAddress": "10.0.0.1",
+                            "LaunchTime": datetime(2024, 1, 1),
+                            "Tags": [
+                                {"Key": "Name", "Value": "test-instance"},
+                                {"Key": "Application", "Value": "ac-server"},
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
+    )
+
+    result = ec2_manager.get_instance_details("i-12345")
+
+    assert result is not None
+    assert result["instance_id"] == "i-12345"
+    assert result["state"] == "running"
+    assert result["instance_type"] == "t3.small"
+    assert result["public_ip"] == "1.2.3.4"
+    assert result["private_ip"] == "10.0.0.1"
+    assert result["name"] == "test-instance"
+
+
+def test_get_instance_details_not_found(ec2_manager: EC2Manager) -> None:
+    """Test getting instance details when instance not found."""
+    ec2_manager.ec2_client.describe_instances = MagicMock(return_value={"Reservations": []})
+
+    result = ec2_manager.get_instance_details("i-99999")
+
+    assert result is None
+
+
+def test_get_instance_details_no_public_ip(ec2_manager: EC2Manager) -> None:
+    """Test getting instance details when no public IP assigned."""
+    from datetime import datetime
+
+    ec2_manager.ec2_client.describe_instances = MagicMock(
+        return_value={
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": "i-12345",
+                            "State": {"Name": "stopped"},
+                            "InstanceType": "t3.small",
+                            "PrivateIpAddress": "10.0.0.1",
+                            "LaunchTime": datetime(2024, 1, 1),
+                            "Tags": [{"Key": "Name", "Value": "test-instance"}],
+                        }
+                    ]
+                }
+            ]
+        }
+    )
+
+    result = ec2_manager.get_instance_details("i-12345")
+
+    assert result is not None
+    assert result["instance_id"] == "i-12345"
+    assert result["state"] == "stopped"
+    assert result["public_ip"] is None

@@ -160,3 +160,21 @@ class Deployer:
 
         # Deploy new instance
         return self.deploy(pack_file_path)
+
+    def get_status(self, instance_id: Optional[str] = None) -> Optional[dict]:
+        """Get status of AC server instance.
+
+        Args:
+            instance_id: Instance ID to check (if None, finds instance by name)
+
+        Returns:
+            Dictionary with instance details, or None if not found
+        """
+        if instance_id is None:
+            instances = self.ec2_manager.find_instances_by_name(self.config.instance_name)
+            if not instances:
+                logger.error(f"No instances found with name {self.config.instance_name}")
+                return None
+            instance_id = instances[0]
+
+        return self.ec2_manager.get_instance_details(instance_id)

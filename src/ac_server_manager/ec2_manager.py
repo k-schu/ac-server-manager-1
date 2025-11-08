@@ -343,3 +343,40 @@ echo "AC Server deployment completed at $(date)" > /var/log/acserver-deployment.
         except ClientError as e:
             logger.error(f"Error finding instances: {e}")
             return []
+
+    def get_instance_details(self, instance_id: str) -> Optional[dict]:
+        """Get detailed information about an instance.
+
+        Args:
+            instance_id: Instance ID
+
+        Returns:
+            Dictionary with instance details, or None if not found
+        """
+        try:
+            response = self.ec2_client.describe_instances(InstanceIds=[instance_id])
+            if not response["Reservations"]:
+                return None
+
+            instance = response["Reservations"][0]["Instances"][0]
+
+            # Extract relevant information
+            details = {
+                "instance_id": instance["InstanceId"],
+                "state": instance["State"]["Name"],
+                "instance_type": instance["InstanceType"],
+                "public_ip": instance.get("PublicIpAddress"),
+                "private_ip": instance.get("PrivateIpAddress"),
+                "launch_time": instance["LaunchTime"],
+            }
+
+            # Extract name tag
+            for tag in instance.get("Tags", []):
+                if tag["Key"] == "Name":
+                    details["name"] = tag["Value"]
+                    break
+
+            return details
+        except ClientError as e:
+            logger.error(f"Error getting instance details: {e}")
+            return None
