@@ -1,0 +1,18 @@
+[Unit]
+Description=AC Game Server (repo-provided service unit)
+After=network.target
+
+[Service]
+Type=simple
+User=acserver
+Group=acserver
+Environment=AC_SERVER_START_CMD="/usr/local/bin/start-ac-server.sh"
+ExecStart=/usr/local/bin/start-ac-server.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=ac-server
+
+[Install]
+WantedBy=multi-user.target
