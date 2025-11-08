@@ -1,180 +1,61 @@
 # AC Server Manager
 
-Automated deployment tool for Assetto Corsa dedicated servers on AWS. This tool handles the complete lifecycle of deploying, managing, and updating Assetto Corsa servers using AWS EC2 and S3.
+Automated deployment tool for Assetto Corsa dedicated servers on AWS. Deploy, manage, and tear down Assetto Corsa servers with a single command.
 
 ## Features
 
-- 🚀 **Fully Automated Deployment**: Deploy Assetto Corsa servers to AWS with a single command
-- 📦 **Content Manager Integration**: Direct support for Content Manager's "Server -> Pack ZIP" functionality
-- 💰 **Cost-Optimized**: Uses t3.small instances suitable for 2-8 players at minimal AWS cost
-- 🔄 **Easy Updates**: Redeploy with new server packs without manual intervention
-- 🎮 **Server Lifecycle Management**: Start, stop, and terminate servers as needed
-- ☁️ **S3 Storage**: Automatic pack file storage and retrieval
+- 🚀 **One-command deployment** from Content Manager server packs
+- ☁️ **AWS-powered** using EC2 and S3
+- 💰 **Cost-optimized** with t3.small instances (~$15/month)
+- 🔄 **Complete lifecycle** management (deploy, start, stop, terminate)
+- 🧹 **Safe teardown** with `terminate-all` command
 
-## Prerequisites
+## Quick Start
 
-- Python 3.9 or higher
-- [UV](https://github.com/astral-sh/uv) package manager (recommended)
-- AWS Account with appropriate permissions
-- AWS credentials configured (`~/.aws/credentials` or environment variables)
-
-## Installation
-
-### Using UV (Recommended)
-
-UV is a fast Python package installer and resolver. Install UV first:
-
-```bash
-# On macOS and Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# On Windows
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-Then install AC Server Manager:
+### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/k-schu/ac-server-manager-1.git
-cd ac-server-manager-1
+git clone https://github.com/k-schu/ac-server-manager.git
+cd ac-server-manager
 
-# Create virtual environment and install with UV
-uv venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip install -e .
-```
-
-### Using pip
-
-```bash
-# Clone the repository
-git clone https://github.com/k-schu/ac-server-manager-1.git
-cd ac-server-manager-1
-
-# Install
+# Install with pip
 pip install -e .
 ```
 
-## AWS Setup
+### AWS Credentials
 
-### Required AWS Permissions
-
-Your AWS credentials need the following permissions:
-- EC2: `DescribeInstances`, `RunInstances`, `TerminateInstances`, `StopInstances`, `StartInstances`, `DescribeImages`, `CreateSecurityGroup`, `AuthorizeSecurityGroupIngress`, `DescribeSecurityGroups`
-- S3: `CreateBucket`, `PutObject`, `GetObject`, `ListBucket`, `DeleteObject`
-
-**For automatic IAM role creation (optional, when using `--create-iam` flag):**
-- IAM: `CreateRole`, `GetRole`, `CreateInstanceProfile`, `GetInstanceProfile`, `AddRoleToInstanceProfile`, `PutRolePolicy`
-
-Note: IAM permissions are only required if you use the `--create-iam` flag to automatically create IAM resources. You can alternatively create IAM resources manually and pass them via `--iam-instance-profile`.
-
-### AWS Configuration
-
-Configure your AWS credentials:
+Configure your AWS credentials with appropriate permissions:
 
 ```bash
 aws configure
 ```
 
-Or set environment variables:
+**Required AWS Permissions:**
+- EC2: `DescribeInstances`, `RunInstances`, `TerminateInstances`, `StopInstances`, `StartInstances`
+- S3: `CreateBucket`, `PutObject`, `GetObject`, `ListBucket`, `DeleteObject`, `DeleteBucket`
+- IAM (optional, for `--create-iam`): `CreateRole`, `CreateInstanceProfile`, `PutRolePolicy`
 
-```bash
-export AWS_ACCESS_KEY_ID=your_access_key
-export AWS_SECRET_ACCESS_KEY=your_secret_key
-export AWS_DEFAULT_REGION=us-east-1
-```
+### Basic Usage
 
-## Usage
-
-### Creating a Server Pack
-
-1. Open Assetto Corsa Content Manager
-2. Go to **Server** tab
-3. Configure your server settings
-4. Click **Pack** -> **Create server package**
-5. Save the `.tar.gz` file
-
-### Deploying a Server
-
-Deploy your server pack to AWS:
-
-```bash
-ac-server-manager deploy server-pack.tar.gz
-```
-
-With custom options:
-
-```bash
-ac-server-manager deploy server-pack.tar.gz \
-  --region us-west-2 \
-  --instance-type t3.small \
-  --bucket my-ac-servers \
-  --instance-name my-race-server \
-  --key-name my-ssh-key
-```
-
-### S3 Access Options
-
-The EC2 instance needs permissions to download the server pack from S3. There are two ways to configure this:
-
-#### Option 1: Automatic IAM Role Creation (Recommended)
-
-Use the `--create-iam` flag to automatically create an IAM role and instance profile with minimal S3 permissions:
-
+**Deploy a server:**
 ```bash
 ac-server-manager deploy server-pack.tar.gz --create-iam
 ```
 
-Optionally specify custom names:
-
+**Check server status:**
 ```bash
-ac-server-manager deploy server-pack.tar.gz \
-  --create-iam \
-  --iam-role-name my-custom-role \
-  --iam-instance-profile-name my-custom-profile
+ac-server-manager status
 ```
 
-**Requirements:**
-- Your AWS credentials must have IAM permissions to create roles and instance profiles
-- Creates a role with trust policy for EC2 service
-- Attaches minimal inline policy: `s3:GetObject` on bucket/* and `s3:ListBucket` on bucket
-- Resources are reused if they already exist (idempotent)
-
-#### Option 2: Use Existing IAM Instance Profile
-
-If you have an existing IAM instance profile with S3 access, you can use it:
-
-```bash
-ac-server-manager deploy server-pack.tar.gz \
-  --iam-instance-profile my-existing-profile
-```
-
-The instance profile must have permissions for:
-- `s3:GetObject` on your bucket and objects
-- `s3:ListBucket` on your bucket
-
-**Note:** If `--iam-instance-profile` is provided, it takes precedence over `--create-iam`.
-
-The server will be deployed and available at the public IP address shown in the output. The server is accessible on:
-- UDP/TCP Port 9600 (game traffic)
-- TCP Port 8081 (HTTP API)
-
-### Managing Your Server
-
-**Stop a running server:**
+**Stop the server:**
 ```bash
 ac-server-manager stop
 ```
 
-**Start a stopped server:**
+**Start the server:**
 ```bash
 ac-server-manager start
-```
-
-**Terminate a server (permanent):**
-```bash
-ac-server-manager terminate
 ```
 
 **Redeploy with a new pack:**
@@ -182,454 +63,104 @@ ac-server-manager terminate
 ac-server-manager redeploy new-server-pack.tar.gz
 ```
 
-You can use the same IAM options with redeploy:
-
+**Terminate instance only:**
 ```bash
-ac-server-manager redeploy new-server-pack.tar.gz --create-iam
+ac-server-manager terminate
 ```
 
-### Finding Your Server in Content Manager
+**Complete teardown (instance + S3 bucket):**
+```bash
+ac-server-manager terminate-all
+```
 
-After deployment:
-1. Note the public IP address from the deployment output
-2. In Content Manager, go to **Online** -> **LAN**
-3. Or manually connect using the IP address and port 9600
+### terminate-all Command
 
-## Architecture
+The `terminate-all` command safely tears down all infrastructure:
 
-### Instance Type Selection
+```bash
+# Interactive confirmation (requires typing "TERMINATE")
+ac-server-manager terminate-all
 
-The default instance type is **t3.small** which provides:
-- 2 vCPUs
-- 2 GB RAM
-- ~$15/month if running 24/7
-- Suitable for 2-8 players
+# Skip confirmation
+ac-server-manager terminate-all --force
 
-For larger servers (8-16 players), consider:
-- **t3.medium**: 2 vCPUs, 4 GB RAM (~$30/month)
-- **t3.large**: 2 vCPUs, 8 GB RAM (~$60/month)
+# Preview what would be deleted
+ac-server-manager terminate-all --dry-run
 
-### Cost Optimization
+# Specify resources explicitly
+ac-server-manager terminate-all --instance-id i-1234567890abcdef0 --s3-bucket my-bucket
 
-To minimize costs:
-1. **Stop servers when not in use**: Use `ac-server-manager stop` when not racing
-2. **Use on-demand pricing**: Only pay when the server is running
-3. **Terminate unused instances**: Use `ac-server-manager terminate` to permanently remove servers
-4. **Regional selection**: Choose regions closer to your players for better latency
+# Terminate instance only, keep S3 bucket
+ac-server-manager terminate-all --skip-bucket
+```
 
-Estimated costs:
-- **Storage (S3)**: ~$0.023/GB/month for server packs
-- **EC2 t3.small**: ~$0.0208/hour when running
-- **Data transfer**: First 100 GB free per month
+**Safety features:**
+- Interactive confirmation requiring the literal word "TERMINATE" (case-sensitive)
+- `--force` flag to skip confirmation for automation
+- `--dry-run` flag to preview actions without deleting
+- `--skip-bucket` to preserve S3 data
+- Detailed logging of all operations
 
-### Deployment Process
+## Command Reference
 
-1. **S3 Upload**: Server pack is uploaded to S3
-2. **Security Group**: Creates/reuses security group with game ports open
-3. **EC2 Launch**: Launches Ubuntu instance with appropriate configuration
-4. **Initialization**: Downloads pack from S3, extracts, and starts server
-5. **Systemd Service**: Server runs as a systemd service for automatic restart
-6. **Post-Boot Validation**: Automated validation ensures server is running correctly:
-   - **Process Check**: Verifies acServer process is running
-   - **Port Validation**: Confirms TCP/UDP 9600 and TCP 8081 are listening
-   - **Log Analysis**: Scans server logs for configuration errors or missing content
-   - **Exit Codes**: Returns non-zero exit code if validation fails, ensuring deployment automation detects issues
+| Command | Description |
+|---------|-------------|
+| `deploy <pack>` | Deploy AC server from Content Manager pack |
+| `status` | Check server status and connectivity |
+| `start` | Start a stopped server |
+| `stop` | Stop a running server |
+| `terminate` | Terminate the EC2 instance |
+| `terminate-all` | **Terminate instance AND delete S3 bucket** |
+| `redeploy <pack>` | Terminate and redeploy with new pack |
+
+### Common Options
+
+- `--region TEXT` - AWS region (default: us-east-1)
+- `--instance-name TEXT` - Instance name tag (default: ac-server-instance)
+- `--instance-id TEXT` - Explicit instance ID
+- `--bucket TEXT` - S3 bucket name (default: ac-server-packs)
+- `--create-iam` - Auto-create IAM role for S3 access
+- `--key-name TEXT` - SSH key pair name
+
+## Documentation
+
+For detailed documentation, troubleshooting, and advanced usage, see:
+
+- **[Full Documentation](docs/README_FULL.md)** - Complete guide with troubleshooting
+- **[Contributing Guide](CONTRIBUTING.md)** - How to contribute
+- **[Examples](EXAMPLES.md)** - Usage examples and recipes
 
 ## Development
 
-### Setup Development Environment with UV
-
 ```bash
 # Install with dev dependencies
-uv pip install -e ".[dev]"
+pip install -e ".[dev]"
 
 # Run tests
 pytest
 
-# Run tests with coverage
-pytest --cov
+# Format code
+black src/ tests/
+ruff check src/ tests/
 
 # Type checking
-mypy src/ac_server_manager
-
-# Code formatting
-black src/ tests/
-
-# Linting
-ruff check src/ tests/
+mypy src/
 ```
 
-### Project Structure
+## Architecture
 
-```
-ac-server-manager-1/
-├── src/
-│   └── ac_server_manager/
-│       ├── __init__.py
-│       ├── cli.py           # Command-line interface
-│       ├── config.py        # Configuration management
-│       ├── deployer.py      # Deployment orchestration
-│       ├── ec2_manager.py   # EC2 operations
-│       └── s3_manager.py    # S3 operations
-├── tests/
-│   ├── test_config.py
-│   ├── test_deployer.py
-│   ├── test_ec2_manager.py
-│   └── test_s3_manager.py
-├── pyproject.toml
-├── requirements.txt
-└── README.md
-```
+- **EC2**: Ubuntu 22.04 LTS instances running Assetto Corsa server
+- **S3**: Stores server pack files
+- **IAM**: Optional automatic role creation for secure S3 access
+- **Security Groups**: Configured for AC server ports (9600 TCP/UDP, 8081 HTTP)
 
-### Running Tests
+## Cost Estimation
 
-```bash
-# Install test dependencies
-uv pip install -e ".[dev]"
+- **t3.small instance**: ~$0.0208/hour (~$15/month if running 24/7)
+- **S3 storage**: ~$0.023/GB/month
+- **Data transfer**: First 100 GB free per month
 
-# Run all tests
-pytest
-
-# Run with coverage report
-pytest --cov=ac_server_manager --cov-report=html
-
-# Run specific test file
-pytest tests/test_deployer.py
-
-# Run specific test
-pytest tests/test_deployer.py::test_deploy_success
-```
-
-## Troubleshooting
-
-### Post-Deployment Validation
-
-After deploying a server, the instance runs an automated validation process that checks:
-- Server process is running
-- Required ports are listening (TCP/UDP 9600, TCP 8081)
-- HTTP endpoint is responding
-- Server logs for common errors
-
-The validation results are saved to `/opt/acserver/deploy-status.json` on the instance.
-
-#### Checking Deployment Status
-
-To verify your deployment was successful:
-
-1. **SSH into the instance:**
-   ```bash
-   ssh -i <your-key>.pem ubuntu@<public-ip>
-   ```
-
-2. **Check the status file:**
-   ```bash
-   cat /opt/acserver/deploy-status.json
-   ```
-   
-   A successful deployment will show:
-   ```json
-   {
-     "success": true,
-     "timestamp": "2024-01-15T12:34:56+00:00",
-     "public_ip": "1.2.3.4",
-     "ports": {
-       "tcp": 9600,
-       "udp": 9600,
-       "http": 8081
-     },
-     "error_messages": []
-   }
-   ```
-
-3. **Check deployment logs:**
-   ```bash
-   cat /var/log/acserver-deploy.log
-   ```
-
-4. **Check systemd service status:**
-   ```bash
-   systemctl status acserver
-   ```
-
-5. **View service logs:**
-   ```bash
-   journalctl -u acserver -n 50
-   ```
-
-### Common Deployment Issues
-
-#### Missing Linux Binary
-
-**Error:** "Windows PE binary detected" or "No acServer binary found"
-
-**Cause:** The server pack contains a Windows binary instead of a Linux binary, or the binary is missing.
-
-**Solution:**
-- Ensure you're using a Linux-compatible Assetto Corsa dedicated server pack
-- If you only have Windows binaries, consider using Wine or Proton (advanced)
-- Verify the pack was exported correctly from Content Manager
-
-#### S3 Permission Denied
-
-**Error:** "Failed to download pack from S3"
-
-**Cause:** The EC2 instance doesn't have permission to access the S3 bucket.
-
-**Solutions:**
-1. **Use automatic IAM creation (recommended):**
-   ```bash
-   ac-server-manager deploy server-pack.tar.gz --create-iam
-   ```
-
-2. **Provide an existing IAM instance profile:**
-   ```bash
-   ac-server-manager deploy server-pack.tar.gz --iam-instance-profile my-profile
-   ```
-
-3. **Make the S3 object public (not recommended for production):**
-   ```bash
-   aws s3api put-object-acl --bucket <bucket> --key <key> --acl public-read
-   ```
-
-The instance profile must have these permissions:
-- `s3:GetObject` on `arn:aws:s3:::<bucket>/*`
-- `s3:ListBucket` on `arn:aws:s3:::<bucket>`
-
-#### Missing Libraries
-
-**Error:** "error while loading shared libraries" in logs
-
-**Cause:** Required 32-bit libraries are missing.
-
-**Solution:** The deployment script automatically installs `lib32gcc-s1` and `lib32stdc++6`. If issues persist, SSH into the instance and manually install additional libraries:
-```bash
-sudo apt-get install -y lib32gcc-s1 lib32stdc++6 libc6-i386
-```
-
-#### Port Binding Errors
-
-**Error:** "failed to bind" or "address already in use"
-
-**Cause:** Another process is using the required ports.
-
-**Solution:**
-1. Check what's using the ports:
-   ```bash
-   sudo ss -tlnp | grep 9600
-   sudo ss -ulnp | grep 9600
-   ```
-
-2. Stop conflicting services or redeploy with a fresh instance.
-
-#### Server Process Not Running
-
-**Error:** "acServer process is not running"
-
-**Causes:**
-- Binary crashed on startup
-- Missing dependencies
-- Configuration errors
-
-**Troubleshooting steps:**
-1. Check systemd logs for crash details:
-   ```bash
-   journalctl -u acserver -n 100
-   ```
-
-2. Try running manually to see errors:
-   ```bash
-   cd /opt/acserver
-   sudo -u root ./acServer
-   ```
-
-3. Check binary architecture:
-   ```bash
-   file /opt/acserver/acServer
-   ldd /opt/acserver/acServer
-   ```
-
-### Server Not Visible in Content Manager
-
-- Verify security group allows UDP/TCP port 9600
-- Check EC2 instance is running: `aws ec2 describe-instances`
-- Wait 2-3 minutes for server initialization to complete
-- Check deployment status using steps above
-- Verify server process is running and ports are listening
-
-### Deployment Fails
-
-- Verify AWS credentials are configured correctly
-- Check you have necessary AWS permissions
-- Ensure the pack file is a valid Content Manager export
-- Check AWS service limits haven't been reached
-- Review `/var/log/acserver-deploy.log` for detailed error messages
-- Check `/opt/acserver/deploy-status.json` for validation results
-
-### High AWS Costs
-
-- Stop instances when not in use
-- Delete old server packs from S3
-- Use appropriate instance types for player count
-- Monitor usage in AWS Cost Explorer
-
-## EC2 Bootstrap and Troubleshooting
-
-This section provides guidance on manually launching EC2 instances with cloud-init for AC server deployments, including setup instructions and troubleshooting tools.
-
-### Cloud-Init User Data Script
-
-The repository includes a cloud-init user-data script at `scripts/cloud-init-user-data.sh` that automatically provisions an EC2 instance for the AC server. This script:
-
-- Installs required packages (ufw, openssh-server, etc.)
-- Enables and starts SSH daemon
-- Creates an `acserver` user
-- Configures firewall rules (ports 22, 8081, 9600 TCP/UDP)
-- Deploys a start wrapper script to `/usr/local/bin/start-ac-server.sh`
-- Creates and enables a systemd service (`ac-server.service`)
-- Starts the AC server service with automatic restart on failure
-
-### Manual EC2 Instance Launch
-
-To launch an EC2 instance with the cloud-init script:
-
-1. **Create a Security Group** (if you don't have one already):
-   ```bash
-   aws ec2 create-security-group \
-     --group-name ac-server-sg \
-     --description "Security group for AC server" \
-     --region us-east-1
-   
-   # Add inbound rules
-   aws ec2 authorize-security-group-ingress \
-     --group-name ac-server-sg \
-     --protocol tcp --port 22 --cidr 0.0.0.0/0  # SSH
-   
-   aws ec2 authorize-security-group-ingress \
-     --group-name ac-server-sg \
-     --protocol tcp --port 8081 --cidr 0.0.0.0/0  # HTTP API
-   
-   aws ec2 authorize-security-group-ingress \
-     --group-name ac-server-sg \
-     --protocol tcp --port 9600 --cidr 0.0.0.0/0  # Game TCP
-   
-   aws ec2 authorize-security-group-ingress \
-     --group-name ac-server-sg \
-     --protocol udp --port 9600 --cidr 0.0.0.0/0  # Game UDP
-   ```
-
-2. **Launch the instance with cloud-init**:
-   ```bash
-   aws ec2 run-instances \
-     --image-id ami-0c55b159cbfafe1f0 \
-     --instance-type t3.small \
-     --key-name your-ssh-key \
-     --security-groups ac-server-sg \
-     --user-data file://scripts/cloud-init-user-data.sh \
-     --region us-east-1
-   ```
-
-   Or use the AWS Console:
-   - Navigate to EC2 → Launch Instance
-   - Select Ubuntu Server (22.04 LTS or later)
-   - Choose t3.small instance type
-   - Configure security group with ports 22, 8081, 9600 (TCP/UDP)
-   - In "Advanced details" → "User data", paste the contents of `scripts/cloud-init-user-data.sh`
-   - Launch the instance
-
-3. **Configure the AC server start command**:
-
-   The cloud-init script creates a placeholder start script. You need to configure it to run your actual AC server:
-
-   **Option A: Set environment variable in systemd unit**
-   
-   SSH into the instance and edit the systemd unit:
-   ```bash
-   sudo nano /etc/systemd/system/ac-server.service
-   ```
-   
-   Update the `Environment` line to your actual start command:
-   ```ini
-   Environment=AC_SERVER_START_CMD="/opt/ac-server/acServer"
-   ```
-   
-   Reload and restart:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl restart ac-server.service
-   ```
-
-   **Option B: Replace the start script**
-   
-   Replace `/usr/local/bin/start-ac-server.sh` with your custom startup logic:
-   ```bash
-   sudo nano /usr/local/bin/start-ac-server.sh
-   ```
-
-4. **Verify the instance is running**:
-   
-   Use the included SSH check script:
-   ```bash
-   ./scripts/ssh-check.sh ubuntu@<instance-ip> -i /path/to/your-key.pem
-   ```
-   
-   This will test:
-   - SSH connectivity
-   - TCP port 8081 (HTTP API)
-   - TCP port 9600 (game server)
-   - Notes about UDP port 9600 testing
-
-### Troubleshooting Bootstrap Issues
-
-**SSH Connection Fails:**
-- Verify the security group allows port 22 from your IP
-- Wait 2-3 minutes for cloud-init to complete
-- Check instance status in AWS Console
-- Verify you're using the correct SSH key
-
-**Ports Not Accessible:**
-- Check ufw status: `sudo ufw status`
-- Verify ports are listening: `sudo ss -tlnp` and `sudo ss -ulnp`
-- Ensure security group rules are correctly configured
-- Check systemd service status: `sudo systemctl status ac-server.service`
-
-**AC Server Not Starting:**
-- Check service logs: `sudo journalctl -u ac-server.service -n 100`
-- Check start script logs: `sudo cat /var/log/ac-server/start.log`
-- Verify AC_SERVER_START_CMD is set correctly
-- Ensure server binary exists and is executable
-
-**Cloud-Init Failures:**
-- View cloud-init logs: `sudo cat /var/log/cloud-init-output.log`
-- Check for bootstrap failures: `sudo cat /var/log/ac-server/boot-failure.log`
-- Verify user-data was correctly passed to the instance
-
-### Repository Files for Bootstrap
-
-The repository includes these files for EC2 bootstrapping:
-
-- `scripts/cloud-init-user-data.sh`: Complete cloud-init configuration
-- `scripts/start-ac-server.sh`: Local copy of the start wrapper (executable)
-- `scripts/ac-server.service`: Systemd unit file template
-- `scripts/ssh-check.sh`: SSH and port connectivity test script (executable)
-
-These files are provided for reference and can be customized for your specific deployment needs.
-
-## Security Considerations
-
-- The default security group allows connections from any IP (0.0.0.0/0)
-- Consider restricting SSH access (port 22) to known IPs
-- Use SSH keys for instance access (specify `--key-name`)
-- Regularly update and patch the server instances
-- Don't commit AWS credentials to version control
-
-## Contributing
-
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
+Stop instances when not in use to minimize costs!
 
 ## License
 
@@ -637,11 +168,5 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Support
 
-For issues and questions:
-- GitHub Issues: https://github.com/k-schu/ac-server-manager-1/issues
-- Assetto Corsa Content Manager: https://assettocorsa.club/content-manager.html
-
-## Acknowledgments
-
-- Assetto Corsa and Kunos Simulazioni
-- Content Manager by x4fab
+- **Issues**: https://github.com/k-schu/ac-server-manager/issues
+- **Full Docs**: [docs/README_FULL.md](docs/README_FULL.md)
