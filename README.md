@@ -176,6 +176,11 @@ Estimated costs:
 3. **EC2 Launch**: Launches Ubuntu instance with appropriate configuration
 4. **Initialization**: Downloads pack from S3, extracts, and starts server
 5. **Systemd Service**: Server runs as a systemd service for automatic restart
+6. **Post-Boot Validation**: Automated validation ensures server is running correctly:
+   - **Process Check**: Verifies acServer process is running
+   - **Port Validation**: Confirms TCP/UDP 9600 and TCP 8081 are listening
+   - **Log Analysis**: Scans server logs for configuration errors or missing content
+   - **Exit Codes**: Returns non-zero exit code if validation fails, ensuring deployment automation detects issues
 
 ## Development
 
@@ -257,6 +262,9 @@ pytest tests/test_deployer.py::test_deploy_success
 - Check you have necessary AWS permissions
 - Ensure the pack file is a valid Content Manager export
 - Check AWS service limits haven't been reached
+- **Check validation logs**: SSH into the instance and review `/var/log/acserver-deployment.log` for detailed validation results
+- **Check systemd status**: Run `systemctl status acserver` to see service status
+- **Review server logs**: Check `/opt/acserver/log/log.txt` for AC server errors
 
 ### High AWS Costs
 

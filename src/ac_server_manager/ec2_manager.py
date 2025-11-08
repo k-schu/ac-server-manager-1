@@ -135,27 +135,152 @@ class EC2Manager:
         script = f"""#!/bin/bash
 set -e
 
+VALIDATION_LOG="/var/log/acserver-validation.log"
+DEPLOYMENT_LOG="/var/log/acserver-deployment.log"
+
+# Logging function
+log_message() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$DEPLOYMENT_LOG"
+}}
+
+# Validation function: Check if process is running
+check_process_running() {{
+    log_message "Checking if acServer process is running..."
+    
+    # Wait up to 30 seconds for process to start
+    for i in {{1..30}}; do
+        if pgrep -x "acServer" > /dev/null; then
+            log_message "✓ acServer process is running (PID: $(pgrep -x acServer))"
+            return 0
+        fi
+        sleep 1
+    done
+    
+    log_message "✗ FAILED: acServer process is not running after 30 seconds"
+    return 1
+}}
+
+# Validation function: Check if ports are listening
+check_ports_listening() {{
+    log_message "Checking if required ports are listening..."
+    local all_ports_ok=true
+    
+    # Check TCP port {AC_SERVER_TCP_PORT}
+    if ss -tlnp | grep -q ":{AC_SERVER_TCP_PORT}"; then
+        log_message "✓ TCP port {AC_SERVER_TCP_PORT} is listening"
+    else
+        log_message "✗ FAILED: TCP port {AC_SERVER_TCP_PORT} is not listening"
+        all_ports_ok=false
+    fi
+    
+    # Check UDP port {AC_SERVER_UDP_PORT}
+    if ss -ulnp | grep -q ":{AC_SERVER_UDP_PORT}"; then
+        log_message "✓ UDP port {AC_SERVER_UDP_PORT} is listening"
+    else
+        log_message "✗ FAILED: UDP port {AC_SERVER_UDP_PORT} is not listening"
+        all_ports_ok=false
+    fi
+    
+    # Check HTTP port {AC_SERVER_HTTP_PORT}
+    if ss -tlnp | grep -q ":{AC_SERVER_HTTP_PORT}"; then
+        log_message "✓ TCP port {AC_SERVER_HTTP_PORT} (HTTP) is listening"
+    else
+        log_message "✗ FAILED: TCP port {AC_SERVER_HTTP_PORT} (HTTP) is not listening"
+        all_ports_ok=false
+    fi
+    
+    if [ "$all_ports_ok" = true ]; then
+        return 0
+    else
+        return 1
+    fi
+}}
+
+# Validation function: Check server logs for errors
+check_server_logs() {{
+    log_message "Checking server logs for configuration errors..."
+    
+    local log_file="/opt/acserver/log/log.txt"
+    
+    # Wait for log file to be created
+    for i in {{1..10}}; do
+        if [ -f "$log_file" ]; then
+            break
+        fi
+        sleep 1
+    done
+    
+    if [ ! -f "$log_file" ]; then
+        log_message "⚠ WARNING: Server log file not found at $log_file"
+        return 0  # Not a critical failure
+    fi
+    
+    # Check for common error patterns
+    local errors_found=false
+    
+    if grep -qi "track not found\\|content not found\\|missing track\\|missing car" "$log_file"; then
+        log_message "✗ FAILED: Missing content detected in server logs"
+        grep -i "track not found\\|content not found\\|missing track\\|missing car" "$log_file" | tail -5 | while read line; do
+            log_message "  Error: $line"
+        done
+        errors_found=true
+    fi
+    
+    if grep -qi "invalid configuration\\|failed to load\\|error loading" "$log_file"; then
+        log_message "✗ FAILED: Configuration errors detected in server logs"
+        grep -i "invalid configuration\\|failed to load\\|error loading" "$log_file" | tail -5 | while read line; do
+            log_message "  Error: $line"
+        done
+        errors_found=true
+    fi
+    
+    if grep -qi "bind.*failed\\|port.*in use\\|address already in use" "$log_file"; then
+        log_message "✗ FAILED: Port binding errors detected in server logs"
+        grep -i "bind.*failed\\|port.*in use\\|address already in use" "$log_file" | tail -5 | while read line; do
+            log_message "  Error: $line"
+        done
+        errors_found=true
+    fi
+    
+    if [ "$errors_found" = false ]; then
+        log_message "✓ No critical errors found in server logs"
+        return 0
+    else
+        return 1
+    fi
+}}
+
+# Main deployment script
+log_message "Starting AC Server deployment..."
+
 # Update system
+log_message "Updating system packages..."
 apt-get update
 apt-get install -y awscli unzip wget
 
 # Install required libraries for AC server
+log_message "Installing AC server dependencies..."
 apt-get install -y lib32gcc-s1 lib32stdc++6
 
 # Create directory for AC server
+log_message "Creating server directory..."
 mkdir -p /opt/acserver
 cd /opt/acserver
 
 # Download pack from S3
+log_message "Downloading server pack from S3..."
 aws s3 cp s3://{s3_bucket}/{s3_key} ./server-pack.tar.gz
 
 # Extract pack
+log_message "Extracting server pack..."
 tar -xzf server-pack.tar.gz
 
 # Make acServer executable
+log_message "Setting executable permissions..."
 chmod +x acServer
 
 # Create systemd service
+log_message "Creating systemd service..."
 cat > /etc/systemd/system/acserver.service << 'EOF'
 [Unit]
 Description=Assetto Corsa Server
@@ -174,12 +299,48 @@ WantedBy=multi-user.target
 EOF
 
 # Enable and start service
+log_message "Starting AC server service..."
 systemctl daemon-reload
 systemctl enable acserver
 systemctl start acserver
 
-# Log completion
-echo "AC Server deployment completed at $(date)" > /var/log/acserver-deployment.log
+# Give the server time to start
+log_message "Waiting for server to initialize..."
+sleep 5
+
+# Run validation checks
+log_message "===== Starting Post-Boot Validation ====="
+validation_failed=false
+
+if ! check_process_running; then
+    validation_failed=true
+fi
+
+if ! check_ports_listening; then
+    validation_failed=true
+fi
+
+if ! check_server_logs; then
+    validation_failed=true
+fi
+
+# Final validation result
+if [ "$validation_failed" = true ]; then
+    log_message "===== VALIDATION FAILED ====="
+    log_message "Deployment completed with errors. Server may not be fully functional."
+    log_message "Check systemd status: systemctl status acserver"
+    log_message "Check server logs: journalctl -u acserver -n 50"
+    
+    # Copy validation results
+    cp "$DEPLOYMENT_LOG" "$VALIDATION_LOG"
+    
+    # Exit with error to signal deployment failure
+    exit 1
+else
+    log_message "===== VALIDATION PASSED ====="
+    log_message "AC Server deployment and validation completed successfully at $(date)"
+    exit 0
+fi
 """
         return script
 

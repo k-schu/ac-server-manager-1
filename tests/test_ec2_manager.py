@@ -71,11 +71,36 @@ def test_create_user_data_script(ec2_manager: EC2Manager) -> None:
     """Test user data script creation."""
     script = ec2_manager.create_user_data_script("test-bucket", "packs/test.tar.gz")
 
+    # Basic deployment steps
     assert "#!/bin/bash" in script
     assert "aws s3 cp s3://test-bucket/packs/test.tar.gz" in script
     assert "tar -xzf server-pack.tar.gz" in script
     assert "chmod +x acServer" in script
     assert "systemctl start acserver" in script
+
+    # Validation functions
+    assert "check_process_running()" in script
+    assert "check_ports_listening()" in script
+    assert "check_server_logs()" in script
+
+    # Process validation
+    assert 'pgrep -x "acServer"' in script
+
+    # Port validation
+    assert 'ss -tlnp | grep -q ":9600"' in script  # TCP port
+    assert 'ss -ulnp | grep -q ":9600"' in script  # UDP port
+    assert 'ss -tlnp | grep -q ":8081"' in script  # HTTP port
+
+    # Log validation
+    assert "track not found" in script
+    assert "invalid configuration" in script
+    assert "bind.*failed" in script
+
+    # Exit codes
+    assert "exit 1" in script  # Failure case
+    assert "exit 0" in script  # Success case
+    assert "VALIDATION FAILED" in script
+    assert "VALIDATION PASSED" in script
 
 
 def test_launch_instance_success(ec2_manager: EC2Manager) -> None:
