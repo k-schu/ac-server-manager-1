@@ -472,6 +472,148 @@ sudo apt-get install -y lib32gcc-s1 lib32stdc++6 libc6-i386
 - Use appropriate instance types for player count
 - Monitor usage in AWS Cost Explorer
 
+## EC2 Bootstrap and Troubleshooting
+
+This section provides guidance on manually launching EC2 instances with cloud-init for AC server deployments, including setup instructions and troubleshooting tools.
+
+### Cloud-Init User Data Script
+
+The repository includes a cloud-init user-data script at `scripts/cloud-init-user-data.sh` that automatically provisions an EC2 instance for the AC server. This script:
+
+- Installs required packages (ufw, openssh-server, etc.)
+- Enables and starts SSH daemon
+- Creates an `acserver` user
+- Configures firewall rules (ports 22, 8081, 9600 TCP/UDP)
+- Deploys a start wrapper script to `/usr/local/bin/start-ac-server.sh`
+- Creates and enables a systemd service (`ac-server.service`)
+- Starts the AC server service with automatic restart on failure
+
+### Manual EC2 Instance Launch
+
+To launch an EC2 instance with the cloud-init script:
+
+1. **Create a Security Group** (if you don't have one already):
+   ```bash
+   aws ec2 create-security-group \
+     --group-name ac-server-sg \
+     --description "Security group for AC server" \
+     --region us-east-1
+   
+   # Add inbound rules
+   aws ec2 authorize-security-group-ingress \
+     --group-name ac-server-sg \
+     --protocol tcp --port 22 --cidr 0.0.0.0/0  # SSH
+   
+   aws ec2 authorize-security-group-ingress \
+     --group-name ac-server-sg \
+     --protocol tcp --port 8081 --cidr 0.0.0.0/0  # HTTP API
+   
+   aws ec2 authorize-security-group-ingress \
+     --group-name ac-server-sg \
+     --protocol tcp --port 9600 --cidr 0.0.0.0/0  # Game TCP
+   
+   aws ec2 authorize-security-group-ingress \
+     --group-name ac-server-sg \
+     --protocol udp --port 9600 --cidr 0.0.0.0/0  # Game UDP
+   ```
+
+2. **Launch the instance with cloud-init**:
+   ```bash
+   aws ec2 run-instances \
+     --image-id ami-0c55b159cbfafe1f0 \
+     --instance-type t3.small \
+     --key-name your-ssh-key \
+     --security-groups ac-server-sg \
+     --user-data file://scripts/cloud-init-user-data.sh \
+     --region us-east-1
+   ```
+
+   Or use the AWS Console:
+   - Navigate to EC2 → Launch Instance
+   - Select Ubuntu Server (22.04 LTS or later)
+   - Choose t3.small instance type
+   - Configure security group with ports 22, 8081, 9600 (TCP/UDP)
+   - In "Advanced details" → "User data", paste the contents of `scripts/cloud-init-user-data.sh`
+   - Launch the instance
+
+3. **Configure the AC server start command**:
+
+   The cloud-init script creates a placeholder start script. You need to configure it to run your actual AC server:
+
+   **Option A: Set environment variable in systemd unit**
+   
+   SSH into the instance and edit the systemd unit:
+   ```bash
+   sudo nano /etc/systemd/system/ac-server.service
+   ```
+   
+   Update the `Environment` line to your actual start command:
+   ```ini
+   Environment=AC_SERVER_START_CMD="/opt/ac-server/acServer"
+   ```
+   
+   Reload and restart:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl restart ac-server.service
+   ```
+
+   **Option B: Replace the start script**
+   
+   Replace `/usr/local/bin/start-ac-server.sh` with your custom startup logic:
+   ```bash
+   sudo nano /usr/local/bin/start-ac-server.sh
+   ```
+
+4. **Verify the instance is running**:
+   
+   Use the included SSH check script:
+   ```bash
+   ./scripts/ssh-check.sh ubuntu@<instance-ip> -i /path/to/your-key.pem
+   ```
+   
+   This will test:
+   - SSH connectivity
+   - TCP port 8081 (HTTP API)
+   - TCP port 9600 (game server)
+   - Notes about UDP port 9600 testing
+
+### Troubleshooting Bootstrap Issues
+
+**SSH Connection Fails:**
+- Verify the security group allows port 22 from your IP
+- Wait 2-3 minutes for cloud-init to complete
+- Check instance status in AWS Console
+- Verify you're using the correct SSH key
+
+**Ports Not Accessible:**
+- Check ufw status: `sudo ufw status`
+- Verify ports are listening: `sudo ss -tlnp` and `sudo ss -ulnp`
+- Ensure security group rules are correctly configured
+- Check systemd service status: `sudo systemctl status ac-server.service`
+
+**AC Server Not Starting:**
+- Check service logs: `sudo journalctl -u ac-server.service -n 100`
+- Check start script logs: `sudo cat /var/log/ac-server/start.log`
+- Verify AC_SERVER_START_CMD is set correctly
+- Ensure server binary exists and is executable
+
+**Cloud-Init Failures:**
+- View cloud-init logs: `sudo cat /var/log/cloud-init-output.log`
+- Check for bootstrap failures: `sudo cat /var/log/ac-server/boot-failure.log`
+- Verify user-data was correctly passed to the instance
+
+### Repository Files for Bootstrap
+
+The repository includes these files for EC2 bootstrapping:
+
+- `scripts/cloud-init-user-data.sh`: Complete cloud-init configuration
+- `scripts/start-ac-server.sh`: Local copy of the start wrapper (executable)
+- `scripts/ac-server.service`: Systemd unit file template
+- `scripts/ssh-check.sh`: SSH and port connectivity test script (executable)
+
+These files are provided for reference and can be customized for your specific deployment needs.
+
 ## Security Considerations
 
 - The default security group allows connections from any IP (0.0.0.0/0)
