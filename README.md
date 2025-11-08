@@ -302,12 +302,159 @@ pytest tests/test_deployer.py::test_deploy_success
 
 ## Troubleshooting
 
+### Post-Deployment Validation
+
+After deploying a server, the instance runs an automated validation process that checks:
+- Server process is running
+- Required ports are listening (TCP/UDP 9600, TCP 8081)
+- HTTP endpoint is responding
+- Server logs for common errors
+
+The validation results are saved to `/opt/acserver/deploy-status.json` on the instance.
+
+#### Checking Deployment Status
+
+To verify your deployment was successful:
+
+1. **SSH into the instance:**
+   ```bash
+   ssh -i <your-key>.pem ubuntu@<public-ip>
+   ```
+
+2. **Check the status file:**
+   ```bash
+   cat /opt/acserver/deploy-status.json
+   ```
+   
+   A successful deployment will show:
+   ```json
+   {
+     "success": true,
+     "timestamp": "2024-01-15T12:34:56+00:00",
+     "public_ip": "1.2.3.4",
+     "ports": {
+       "tcp": 9600,
+       "udp": 9600,
+       "http": 8081
+     },
+     "error_messages": []
+   }
+   ```
+
+3. **Check deployment logs:**
+   ```bash
+   cat /var/log/acserver-deploy.log
+   ```
+
+4. **Check systemd service status:**
+   ```bash
+   systemctl status acserver
+   ```
+
+5. **View service logs:**
+   ```bash
+   journalctl -u acserver -n 50
+   ```
+
+### Common Deployment Issues
+
+#### Missing Linux Binary
+
+**Error:** "Windows PE binary detected" or "No acServer binary found"
+
+**Cause:** The server pack contains a Windows binary instead of a Linux binary, or the binary is missing.
+
+**Solution:**
+- Ensure you're using a Linux-compatible Assetto Corsa dedicated server pack
+- If you only have Windows binaries, consider using Wine or Proton (advanced)
+- Verify the pack was exported correctly from Content Manager
+
+#### S3 Permission Denied
+
+**Error:** "Failed to download pack from S3"
+
+**Cause:** The EC2 instance doesn't have permission to access the S3 bucket.
+
+**Solutions:**
+1. **Use automatic IAM creation (recommended):**
+   ```bash
+   ac-server-manager deploy server-pack.tar.gz --create-iam
+   ```
+
+2. **Provide an existing IAM instance profile:**
+   ```bash
+   ac-server-manager deploy server-pack.tar.gz --iam-instance-profile my-profile
+   ```
+
+3. **Make the S3 object public (not recommended for production):**
+   ```bash
+   aws s3api put-object-acl --bucket <bucket> --key <key> --acl public-read
+   ```
+
+The instance profile must have these permissions:
+- `s3:GetObject` on `arn:aws:s3:::<bucket>/*`
+- `s3:ListBucket` on `arn:aws:s3:::<bucket>`
+
+#### Missing Libraries
+
+**Error:** "error while loading shared libraries" in logs
+
+**Cause:** Required 32-bit libraries are missing.
+
+**Solution:** The deployment script automatically installs `lib32gcc-s1` and `lib32stdc++6`. If issues persist, SSH into the instance and manually install additional libraries:
+```bash
+sudo apt-get install -y lib32gcc-s1 lib32stdc++6 libc6-i386
+```
+
+#### Port Binding Errors
+
+**Error:** "failed to bind" or "address already in use"
+
+**Cause:** Another process is using the required ports.
+
+**Solution:**
+1. Check what's using the ports:
+   ```bash
+   sudo ss -tlnp | grep 9600
+   sudo ss -ulnp | grep 9600
+   ```
+
+2. Stop conflicting services or redeploy with a fresh instance.
+
+#### Server Process Not Running
+
+**Error:** "acServer process is not running"
+
+**Causes:**
+- Binary crashed on startup
+- Missing dependencies
+- Configuration errors
+
+**Troubleshooting steps:**
+1. Check systemd logs for crash details:
+   ```bash
+   journalctl -u acserver -n 100
+   ```
+
+2. Try running manually to see errors:
+   ```bash
+   cd /opt/acserver
+   sudo -u root ./acServer
+   ```
+
+3. Check binary architecture:
+   ```bash
+   file /opt/acserver/acServer
+   ldd /opt/acserver/acServer
+   ```
+
 ### Server Not Visible in Content Manager
 
 - Verify security group allows UDP/TCP port 9600
 - Check EC2 instance is running: `aws ec2 describe-instances`
 - Wait 2-3 minutes for server initialization to complete
-- Check server logs by SSH'ing into the instance
+- Check deployment status using steps above
+- Verify server process is running and ports are listening
 
 ### Deployment Fails
 
@@ -315,9 +462,8 @@ pytest tests/test_deployer.py::test_deploy_success
 - Check you have necessary AWS permissions
 - Ensure the pack file is a valid Content Manager export
 - Check AWS service limits haven't been reached
-- **Check validation logs**: SSH into the instance and review `/var/log/acserver-deployment.log` for detailed validation results
-- **Check systemd status**: Run `systemctl status acserver` to see service status
-- **Review server logs**: Check `/opt/acserver/log/log.txt` for AC server errors
+- Review `/var/log/acserver-deploy.log` for detailed error messages
+- Check `/opt/acserver/deploy-status.json` for validation results
 
 ### High AWS Costs
 

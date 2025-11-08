@@ -133,155 +133,186 @@ class EC2Manager:
             User data script as string
         """
         script = f"""#!/bin/bash
-set -e
+set -euo pipefail
 
-VALIDATION_LOG="/var/log/acserver-validation.log"
-DEPLOYMENT_LOG="/var/log/acserver-deployment.log"
+# Configuration
+DEPLOY_LOG="/var/log/acserver-deploy.log"
+STATUS_FILE="/opt/acserver/deploy-status.json"
+VALIDATION_TIMEOUT=120
+AC_SERVER_TCP_PORT={AC_SERVER_TCP_PORT}
+AC_SERVER_UDP_PORT={AC_SERVER_UDP_PORT}
+AC_SERVER_HTTP_PORT={AC_SERVER_HTTP_PORT}
 
-# Logging function
+# Logging function - logs to both file and cloud-init output
 log_message() {{
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$DEPLOYMENT_LOG"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$DEPLOY_LOG"
 }}
 
-# Validation function: Check if process is running
-check_process_running() {{
-    log_message "Checking if acServer process is running..."
-    
-    # Wait up to 30 seconds for process to start
-    for i in {{1..30}}; do
-        if pgrep -x "acServer" > /dev/null; then
-            log_message "✓ acServer process is running (PID: $(pgrep -x acServer))"
-            return 0
-        fi
-        sleep 1
-    done
-    
-    log_message "✗ FAILED: acServer process is not running after 30 seconds"
-    return 1
+# Error tracking
+declare -a ERROR_MESSAGES=()
+
+add_error() {{
+    ERROR_MESSAGES+=("$1")
+    log_message "✗ ERROR: $1"
 }}
 
-# Validation function: Check if ports are listening
-check_ports_listening() {{
-    log_message "Checking if required ports are listening..."
-    local all_ports_ok=true
+# Write status JSON
+write_status() {{
+    local success=$1
+    local public_ip=$2
+    local timestamp=$(date -Iseconds)
     
-    # Check TCP port {AC_SERVER_TCP_PORT}
-    if ss -tlnp | grep -q ":{AC_SERVER_TCP_PORT}"; then
-        log_message "✓ TCP port {AC_SERVER_TCP_PORT} is listening"
-    else
-        log_message "✗ FAILED: TCP port {AC_SERVER_TCP_PORT} is not listening"
-        all_ports_ok=false
-    fi
-    
-    # Check UDP port {AC_SERVER_UDP_PORT}
-    if ss -ulnp | grep -q ":{AC_SERVER_UDP_PORT}"; then
-        log_message "✓ UDP port {AC_SERVER_UDP_PORT} is listening"
-    else
-        log_message "✗ FAILED: UDP port {AC_SERVER_UDP_PORT} is not listening"
-        all_ports_ok=false
-    fi
-    
-    # Check HTTP port {AC_SERVER_HTTP_PORT}
-    if ss -tlnp | grep -q ":{AC_SERVER_HTTP_PORT}"; then
-        log_message "✓ TCP port {AC_SERVER_HTTP_PORT} (HTTP) is listening"
-    else
-        log_message "✗ FAILED: TCP port {AC_SERVER_HTTP_PORT} (HTTP) is not listening"
-        all_ports_ok=false
-    fi
-    
-    if [ "$all_ports_ok" = true ]; then
-        return 0
-    else
-        return 1
-    fi
+    cat > "$STATUS_FILE" << STATUSEOF
+{{
+  "success": $success,
+  "timestamp": "$timestamp",
+  "public_ip": "$public_ip",
+  "ports": {{
+    "tcp": $AC_SERVER_TCP_PORT,
+    "udp": $AC_SERVER_UDP_PORT,
+    "http": $AC_SERVER_HTTP_PORT
+  }},
+  "error_messages": [
+    $(printf '"%s"' "${{ERROR_MESSAGES[@]}}" | paste -sd, -)
+  ]
 }}
-
-# Validation function: Check server logs for errors
-check_server_logs() {{
-    log_message "Checking server logs for configuration errors..."
-    
-    local log_file="/opt/acserver/log/log.txt"
-    
-    # Wait for log file to be created
-    for i in {{1..10}}; do
-        if [ -f "$log_file" ]; then
-            break
-        fi
-        sleep 1
-    done
-    
-    if [ ! -f "$log_file" ]; then
-        log_message "⚠ WARNING: Server log file not found at $log_file"
-        return 0  # Not a critical failure
-    fi
-    
-    # Check for common error patterns
-    local errors_found=false
-    
-    if grep -qi "track not found\\|content not found\\|missing track\\|missing car" "$log_file"; then
-        log_message "✗ FAILED: Missing content detected in server logs"
-        grep -i "track not found\\|content not found\\|missing track\\|missing car" "$log_file" | tail -5 | while read line; do
-            log_message "  Error: $line"
-        done
-        errors_found=true
-    fi
-    
-    if grep -qi "invalid configuration\\|failed to load\\|error loading" "$log_file"; then
-        log_message "✗ FAILED: Configuration errors detected in server logs"
-        grep -i "invalid configuration\\|failed to load\\|error loading" "$log_file" | tail -5 | while read line; do
-            log_message "  Error: $line"
-        done
-        errors_found=true
-    fi
-    
-    if grep -qi "bind.*failed\\|port.*in use\\|address already in use" "$log_file"; then
-        log_message "✗ FAILED: Port binding errors detected in server logs"
-        grep -i "bind.*failed\\|port.*in use\\|address already in use" "$log_file" | tail -5 | while read line; do
-            log_message "  Error: $line"
-        done
-        errors_found=true
-    fi
-    
-    if [ "$errors_found" = false ]; then
-        log_message "✓ No critical errors found in server logs"
-        return 0
-    else
-        return 1
-    fi
+STATUSEOF
+    log_message "Status written to $STATUS_FILE"
 }}
 
 # Main deployment script
-log_message "Starting AC Server deployment..."
+log_message "===== Starting AC Server Deployment ====="
 
-# Update system
-log_message "Updating system packages..."
-apt-get update
-apt-get install -y awscli unzip wget
-
-# Install required libraries for AC server
-log_message "Installing AC server dependencies..."
-apt-get install -y lib32gcc-s1 lib32stdc++6
+# Update system and install required packages
+log_message "Installing required packages..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq awscli unzip wget tar jq file iproute2 net-tools lib32gcc-s1 lib32stdc++6 2>&1 | tee -a "$DEPLOY_LOG"
 
 # Create directory for AC server
 log_message "Creating server directory..."
 mkdir -p /opt/acserver
 cd /opt/acserver
 
-# Download pack from S3
+# Download pack from S3 with retries
 log_message "Downloading server pack from S3..."
-aws s3 cp s3://{s3_bucket}/{s3_key} ./server-pack.tar.gz
+MAX_RETRIES=3
+RETRY_DELAY=5
+for attempt in $(seq 1 $MAX_RETRIES); do
+    if aws s3 cp s3://{s3_bucket}/{s3_key} ./server-pack.tar.gz 2>&1 | tee -a "$DEPLOY_LOG"; then
+        log_message "✓ Download successful"
+        break
+    else
+        if [ $attempt -eq $MAX_RETRIES ]; then
+            add_error "Failed to download pack from S3 after $MAX_RETRIES attempts"
+            PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
+            write_status false "$PUBLIC_IP"
+            exit 1
+        fi
+        log_message "Download attempt $attempt failed, retrying in $RETRY_DELAY seconds..."
+        sleep $RETRY_DELAY
+        RETRY_DELAY=$((RETRY_DELAY * 2))
+    fi
+done
+
+# Verify downloaded file
+if [ ! -f "./server-pack.tar.gz" ] || [ ! -s "./server-pack.tar.gz" ]; then
+    add_error "Downloaded file is missing or empty"
+    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
+    write_status false "$PUBLIC_IP"
+    exit 1
+fi
 
 # Extract pack
 log_message "Extracting server pack..."
-tar -xzf server-pack.tar.gz
+if tar -xzf server-pack.tar.gz 2>&1 | tee -a "$DEPLOY_LOG"; then
+    log_message "✓ Extraction successful"
+else
+    add_error "Failed to extract server pack - file may be corrupted"
+    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
+    write_status false "$PUBLIC_IP"
+    exit 1
+fi
 
-# Make acServer executable
-log_message "Setting executable permissions..."
-chmod +x acServer
+# Locate the server executable
+log_message "Locating acServer executable..."
+ACSERVER_PATH=""
+
+# Search for acServer binary - check common locations first
+if [ -f "./acServer" ] && [ -x "./acServer" ]; then
+    ACSERVER_PATH="./acServer"
+elif [ -f "./acServer" ]; then
+    ACSERVER_PATH="./acServer"
+else
+    # Search in subdirectories
+    FOUND_BINARIES=$(find /opt/acserver -maxdepth 3 -type f \\( -name "acServer*" -o -name "acserver*" \\) 2>/dev/null || true)
+    
+    if [ -n "$FOUND_BINARIES" ]; then
+        # Prefer executables
+        for binary in $FOUND_BINARIES; do
+            if [ -x "$binary" ]; then
+                ACSERVER_PATH="$binary"
+                break
+            fi
+        done
+        
+        # If no executable found, take first match
+        if [ -z "$ACSERVER_PATH" ]; then
+            ACSERVER_PATH=$(echo "$FOUND_BINARIES" | head -1)
+        fi
+    fi
+fi
+
+if [ -z "$ACSERVER_PATH" ]; then
+    add_error "No acServer binary found in extracted pack"
+    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
+    write_status false "$PUBLIC_IP"
+    exit 1
+fi
+
+log_message "Found binary at: $ACSERVER_PATH"
+
+# Convert to absolute path
+ACSERVER_PATH=$(readlink -f "$ACSERVER_PATH")
+log_message "Absolute path: $ACSERVER_PATH"
+
+# Verify binary is Linux-compatible
+log_message "Verifying binary compatibility..."
+BINARY_TYPE=$(file "$ACSERVER_PATH")
+log_message "Binary type: $BINARY_TYPE"
+
+if echo "$BINARY_TYPE" | grep -q "PE32\\|MS Windows"; then
+    add_error "Windows PE binary detected - pack must contain Linux acServer binary or use Wine/Proton"
+    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
+    write_status false "$PUBLIC_IP"
+    exit 1
+fi
+
+if ! echo "$BINARY_TYPE" | grep -q "ELF"; then
+    add_error "Binary is not a Linux ELF executable: $BINARY_TYPE"
+    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
+    write_status false "$PUBLIC_IP"
+    exit 1
+fi
+
+log_message "✓ Binary is a Linux ELF executable"
+
+# Check library dependencies
+log_message "Checking library dependencies..."
+ldd "$ACSERVER_PATH" 2>&1 | tee -a "$DEPLOY_LOG" || log_message "⚠ Warning: ldd check had issues (may be expected for some binaries)"
+
+# Ensure binary is executable and owned by root
+chmod +x "$ACSERVER_PATH"
+chown root:root "$ACSERVER_PATH"
+log_message "✓ Binary permissions set"
+
+# Get working directory (directory containing the binary)
+WORKING_DIR=$(dirname "$ACSERVER_PATH")
+log_message "Working directory: $WORKING_DIR"
 
 # Create systemd service
 log_message "Creating systemd service..."
-cat > /etc/systemd/system/acserver.service << 'EOF'
+cat > /etc/systemd/system/acserver.service << EOFSERVICE
 [Unit]
 Description=Assetto Corsa Server
 After=network.target
@@ -289,14 +320,18 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/acserver
-ExecStart=/opt/acserver/acServer
+WorkingDirectory=$WORKING_DIR
+ExecStart=$ACSERVER_PATH
 Restart=on-failure
 RestartSec=10
+StandardOutput=append:/var/log/acserver-stdout.log
+StandardError=append:/var/log/acserver-stderr.log
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOFSERVICE
+
+log_message "✓ Systemd service created"
 
 # Enable and start service
 log_message "Starting AC server service..."
@@ -304,41 +339,160 @@ systemctl daemon-reload
 systemctl enable acserver
 systemctl start acserver
 
-# Give the server time to start
-log_message "Waiting for server to initialize..."
-sleep 5
+# Wait for server to start
+log_message "Waiting for server to initialize (timeout: ${{VALIDATION_TIMEOUT}}s)..."
+sleep 10
 
 # Run validation checks
 log_message "===== Starting Post-Boot Validation ====="
 validation_failed=false
 
-if ! check_process_running; then
+# Get public IP
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
+log_message "Public IP: $PUBLIC_IP"
+
+# Check if process is running
+log_message "Checking if acServer process is running..."
+PROCESS_NAME=$(basename "$ACSERVER_PATH")
+elapsed=0
+process_running=false
+
+while [ $elapsed -lt $VALIDATION_TIMEOUT ]; do
+    if pgrep -f "$ACSERVER_PATH" > /dev/null || pgrep -x "$PROCESS_NAME" > /dev/null; then
+        PROCESS_PID=$(pgrep -f "$ACSERVER_PATH" | head -1)
+        log_message "✓ acServer process is running (PID: $PROCESS_PID)"
+        process_running=true
+        break
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+done
+
+if [ "$process_running" = false ]; then
+    add_error "acServer process is not running after ${{VALIDATION_TIMEOUT}}s"
+    validation_failed=true
+    log_message "Systemd service status:"
+    systemctl status acserver 2>&1 | tee -a "$DEPLOY_LOG" || true
+    log_message "Service logs:"
+    journalctl -u acserver -n 50 --no-pager 2>&1 | tee -a "$DEPLOY_LOG" || true
+fi
+
+# Check if ports are listening
+log_message "Checking if required ports are listening..."
+sleep 5  # Give server time to bind ports
+
+check_port_listening() {{
+    local proto=$1
+    local port=$2
+    local port_type=$3
+    
+    if [ "$proto" = "tcp" ]; then
+        if ss -tlnp 2>/dev/null | grep -q ":$port " || netstat -tlnp 2>/dev/null | grep -q ":$port "; then
+            log_message "✓ TCP port $port ($port_type) is listening"
+            return 0
+        else
+            add_error "TCP port $port ($port_type) is not listening"
+            return 1
+        fi
+    else
+        if ss -ulnp 2>/dev/null | grep -q ":$port " || netstat -ulnp 2>/dev/null | grep -q ":$port "; then
+            log_message "✓ UDP port $port ($port_type) is listening"
+            return 0
+        else
+            add_error "UDP port $port ($port_type) is not listening"
+            return 1
+        fi
+    fi
+}}
+
+if ! check_port_listening tcp $AC_SERVER_TCP_PORT "game"; then
     validation_failed=true
 fi
 
-if ! check_ports_listening; then
+if ! check_port_listening udp $AC_SERVER_UDP_PORT "game"; then
     validation_failed=true
 fi
 
-if ! check_server_logs; then
+if ! check_port_listening tcp $AC_SERVER_HTTP_PORT "HTTP"; then
     validation_failed=true
+fi
+
+# Check HTTP health endpoint
+log_message "Checking HTTP endpoint..."
+if curl -sS --max-time 5 http://127.0.0.1:$AC_SERVER_HTTP_PORT/ > /dev/null 2>&1; then
+    log_message "✓ HTTP endpoint is responding"
+else
+    log_message "⚠ Warning: HTTP endpoint not responding (may be expected for some server configs)"
+fi
+
+# Construct and check acstuff join link
+log_message "Checking acstuff join link..."
+ACSTUFF_URL="http://acstuff.ru/s/q:race/online/join?ip=$PUBLIC_IP&httpPort=$AC_SERVER_HTTP_PORT"
+log_message "acstuff URL: $ACSTUFF_URL"
+
+if curl -sS --max-time 5 "$ACSTUFF_URL" > /dev/null 2>&1; then
+    log_message "✓ acstuff join link is reachable"
+else
+    log_message "⚠ Warning: acstuff join link not reachable (may be due to external service)"
+fi
+
+# Check server logs for errors
+log_message "Checking server logs for common errors..."
+LOG_FILES=$(find /opt/acserver -type f -name "*.txt" -o -name "*.log" 2>/dev/null | head -5)
+
+if [ -n "$LOG_FILES" ]; then
+    for log_file in $LOG_FILES; do
+        if [ -f "$log_file" ] && [ -r "$log_file" ]; then
+            log_message "Checking log: $log_file"
+            
+            # Check for common error patterns
+            if grep -qi "track not found\\|content not found\\|missing track\\|missing car" "$log_file" 2>/dev/null; then
+                add_error "Missing content detected in server logs"
+                grep -i "track not found\\|content not found\\|missing track\\|missing car" "$log_file" 2>/dev/null | tail -3 | while read line; do
+                    log_message "  $line"
+                done
+                validation_failed=true
+            fi
+            
+            if grep -qi "failed to bind\\|port.*in use\\|address already in use" "$log_file" 2>/dev/null; then
+                add_error "Port binding errors detected in server logs"
+                grep -i "failed to bind\\|port.*in use\\|address already in use" "$log_file" 2>/dev/null | tail -3 | while read line; do
+                    log_message "  $line"
+                done
+                validation_failed=true
+            fi
+            
+            if grep -qi "permission denied\\|segmentation fault\\|core dumped" "$log_file" 2>/dev/null; then
+                add_error "Critical errors detected in server logs"
+                grep -i "permission denied\\|segmentation fault\\|core dumped" "$log_file" 2>/dev/null | tail -3 | while read line; do
+                    log_message "  $line"
+                done
+                validation_failed=true
+            fi
+        fi
+    done
+else
+    log_message "⚠ Warning: No server log files found yet"
 fi
 
 # Final validation result
 if [ "$validation_failed" = true ]; then
     log_message "===== VALIDATION FAILED ====="
     log_message "Deployment completed with errors. Server may not be fully functional."
+    log_message "Check status file: $STATUS_FILE"
+    log_message "Check deployment log: $DEPLOY_LOG"
     log_message "Check systemd status: systemctl status acserver"
-    log_message "Check server logs: journalctl -u acserver -n 50"
+    log_message "Check service logs: journalctl -u acserver -n 50"
     
-    # Copy validation results
-    cp "$DEPLOYMENT_LOG" "$VALIDATION_LOG"
-    
-    # Exit with error to signal deployment failure
+    write_status false "$PUBLIC_IP"
     exit 1
 else
     log_message "===== VALIDATION PASSED ====="
-    log_message "AC Server deployment and validation completed successfully at $(date)"
+    log_message "AC Server deployment and validation completed successfully"
+    log_message "Server is accessible at: $PUBLIC_IP:$AC_SERVER_TCP_PORT"
+    log_message "acstuff join link: $ACSTUFF_URL"
+    
+    write_status true "$PUBLIC_IP"
     exit 0
 fi
 """

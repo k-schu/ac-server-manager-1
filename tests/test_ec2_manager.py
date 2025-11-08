@@ -71,36 +71,112 @@ def test_create_user_data_script(ec2_manager: EC2Manager) -> None:
     """Test user data script creation."""
     script = ec2_manager.create_user_data_script("test-bucket", "packs/test.tar.gz")
 
-    # Basic deployment steps
+    # Basic script structure
     assert "#!/bin/bash" in script
+    assert "set -euo pipefail" in script
+    
+    # Required packages installation
+    assert "awscli" in script
+    assert "unzip" in script
+    assert "wget" in script
+    assert "tar" in script
+    assert "jq" in script
+    assert "lib32gcc-s1" in script
+    assert "lib32stdc++6" in script
+    assert "iproute2" in script or "net-tools" in script
+    
+    # S3 download with retries
     assert "aws s3 cp s3://test-bucket/packs/test.tar.gz" in script
+    assert "MAX_RETRIES" in script
+    assert "RETRY_DELAY" in script
+    
+    # Pack extraction and verification
     assert "tar -xzf server-pack.tar.gz" in script
-    assert "chmod +x acServer" in script
+    
+    # Binary location and verification
+    assert "find /opt/acserver" in script
+    assert "acServer" in script or "acserver" in script
+    assert "file" in script  # file command to check binary type
+    assert "ELF" in script
+    assert "PE32" in script or "Windows" in script  # Check for Windows binary detection
+    
+    # Binary permissions - now uses variable
+    assert "chmod +x" in script
+    assert "chown root:root" in script
+    
+    # ldd check for dependencies
+    assert "ldd" in script
+    
+    # Systemd service creation with dynamic path
+    assert "systemctl daemon-reload" in script
+    assert "systemctl enable acserver" in script
     assert "systemctl start acserver" in script
-
-    # Validation functions
-    assert "check_process_running()" in script
-    assert "check_ports_listening()" in script
-    assert "check_server_logs()" in script
-
+    assert "/etc/systemd/system/acserver.service" in script
+    assert "WorkingDirectory=" in script
+    assert "ExecStart=" in script
+    
+    # Validation timeout
+    assert "VALIDATION_TIMEOUT" in script
+    
     # Process validation
-    assert 'pgrep -x "acServer"' in script
-
-    # Port validation
-    assert 'ss -tlnp | grep -q ":9600"' in script  # TCP port
-    assert 'ss -ulnp | grep -q ":9600"' in script  # UDP port
-    assert 'ss -tlnp | grep -q ":8081"' in script  # HTTP port
-
-    # Log validation
+    assert "pgrep" in script
+    
+    # Port validation with both ss and netstat fallback
+    assert "ss -tlnp" in script or "netstat -tlnp" in script
+    assert "ss -ulnp" in script or "netstat -ulnp" in script
+    
+    # Port constants and usage
+    assert "AC_SERVER_TCP_PORT=9600" in script
+    assert "AC_SERVER_UDP_PORT=9600" in script
+    assert "AC_SERVER_HTTP_PORT=8081" in script
+    # Ports are now referenced via variables
+    assert "$AC_SERVER_TCP_PORT" in script
+    assert "$AC_SERVER_UDP_PORT" in script
+    assert "$AC_SERVER_HTTP_PORT" in script
+    
+    # HTTP endpoint check
+    assert "curl" in script
+    assert "http://127.0.0.1" in script
+    
+    # Public IP retrieval
+    assert "169.254.169.254/latest/meta-data/public-ipv4" in script
+    
+    # acstuff join link
+    assert "acstuff" in script
+    
+    # Log validation - common error patterns
     assert "track not found" in script
-    assert "invalid configuration" in script
-    assert "bind.*failed" in script
-
+    assert "content not found" in script
+    assert "missing track" in script
+    assert "failed to bind" in script
+    assert "port.*in use" in script
+    assert "address already in use" in script
+    assert "permission denied" in script
+    assert "segmentation fault" in script
+    
+    # Status file
+    assert "/opt/acserver/deploy-status.json" in script
+    assert "STATUS_FILE" in script
+    assert "write_status" in script
+    assert '"success":' in script
+    assert '"timestamp":' in script
+    assert '"public_ip":' in script
+    assert '"error_messages":' in script
+    
+    # Deployment log
+    assert "/var/log/acserver-deploy.log" in script
+    assert "DEPLOY_LOG" in script
+    assert "log_message" in script
+    
     # Exit codes
     assert "exit 1" in script  # Failure case
     assert "exit 0" in script  # Success case
     assert "VALIDATION FAILED" in script
     assert "VALIDATION PASSED" in script
+    
+    # Error tracking
+    assert "ERROR_MESSAGES" in script
+    assert "add_error" in script
 
 
 def test_launch_instance_success(ec2_manager: EC2Manager) -> None:

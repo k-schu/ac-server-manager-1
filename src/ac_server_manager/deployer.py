@@ -60,14 +60,16 @@ class Deployer:
                 iam_manager = IAMManager(self.config.aws_region)
                 role_name = self.config.iam_role_name or "ac-server-role"
                 profile_name = self.config.iam_instance_profile_name or "ac-server-instance-profile"
-                
+
                 iam_profile_to_use = iam_manager.ensure_role_and_instance_profile(
                     role_name, profile_name, self.config.s3_bucket_name
                 )
                 logger.info(f"IAM resources configured successfully: {iam_profile_to_use}")
             except Exception as e:
                 logger.error(f"Failed to create IAM resources: {e}")
-                logger.error("Deployment cannot continue without IAM instance profile for S3 access")
+                logger.error(
+                    "Deployment cannot continue without IAM instance profile for S3 access"
+                )
                 return None
 
         # Step 4: Create security group
@@ -109,7 +111,15 @@ class Deployer:
             logger.info(f"Instance ID: {instance_id}")
             logger.info(f"Public IP: {public_ip}")
             logger.info(f"Server will be available at {public_ip}:9600 (UDP/TCP)")
-            logger.info("Note: Server initialization may take a few minutes")
+            logger.info("")
+            logger.info("Post-deployment validation is running on the instance...")
+            logger.info("This may take 2-3 minutes. To check deployment status:")
+            logger.info(f"  1. SSH to instance: ssh -i <key>.pem ubuntu@{public_ip}")
+            logger.info("  2. Check status: cat /opt/acserver/deploy-status.json")
+            logger.info("  3. Check logs: cat /var/log/acserver-deploy.log")
+            logger.info("  4. Check service: systemctl status acserver")
+            logger.info("")
+            logger.info("If validation fails, check the logs above for troubleshooting.")
 
         return instance_id
 
