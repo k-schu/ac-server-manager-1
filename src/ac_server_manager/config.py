@@ -18,6 +18,12 @@ class ServerConfig:
     s3_bucket_name: str = "ac-server-packs"
     pack_file_key: Optional[str] = None
 
+    # IAM Configuration
+    auto_create_iam: bool = False  # Automatic IAM role/profile creation (default off)
+    iam_role_name: Optional[str] = None
+    iam_instance_profile_name: Optional[str] = None
+    iam_instance_profile: Optional[str] = None  # Existing profile to use (takes precedence)
+
     # Server Configuration
     server_name: str = "AC Server"
     max_players: int = 8

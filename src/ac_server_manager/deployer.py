@@ -6,6 +6,7 @@ from typing import Optional
 
 from .config import ServerConfig
 from .ec2_manager import EC2Manager
+from .iam_manager import IAMManager
 from .s3_manager import S3Manager
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,30 @@ class Deployer:
             logger.error("Failed to upload pack to S3")
             return None
 
-        # Step 3: Create security group
+        # Step 3: Determine IAM instance profile to use
+        iam_profile_to_use = None
+        if self.config.iam_instance_profile:
+            # User provided an explicit instance profile - use it
+            iam_profile_to_use = self.config.iam_instance_profile
+            logger.info(f"Using existing IAM instance profile: {iam_profile_to_use}")
+        elif self.config.auto_create_iam:
+            # Auto-create IAM role and instance profile
+            logger.info("Auto-creating IAM role and instance profile for S3 access")
+            try:
+                iam_manager = IAMManager(self.config.aws_region)
+                role_name = self.config.iam_role_name or "ac-server-role"
+                profile_name = self.config.iam_instance_profile_name or "ac-server-instance-profile"
+                
+                iam_profile_to_use = iam_manager.ensure_role_and_instance_profile(
+                    role_name, profile_name, self.config.s3_bucket_name
+                )
+                logger.info(f"IAM resources configured successfully: {iam_profile_to_use}")
+            except Exception as e:
+                logger.error(f"Failed to create IAM resources: {e}")
+                logger.error("Deployment cannot continue without IAM instance profile for S3 access")
+                return None
+
+        # Step 4: Create security group
         security_group_id = self.ec2_manager.create_security_group(
             self.config.security_group_name, "Security group for Assetto Corsa server"
         )
@@ -54,16 +78,16 @@ class Deployer:
             logger.error("Failed to create security group")
             return None
 
-        # Step 4: Get Ubuntu AMI
+        # Step 5: Get Ubuntu AMI
         ami_id = self.ec2_manager.get_ubuntu_ami()
         if not ami_id:
             logger.error("Failed to get Ubuntu AMI")
             return None
 
-        # Step 5: Create user data script
+        # Step 6: Create user data script
         user_data = self.ec2_manager.create_user_data_script(self.config.s3_bucket_name, s3_key)
 
-        # Step 6: Launch instance
+        # Step 7: Launch instance
         instance_id = self.ec2_manager.launch_instance(
             ami_id=ami_id,
             instance_type=self.config.instance_type,
@@ -71,13 +95,14 @@ class Deployer:
             user_data=user_data,
             instance_name=self.config.instance_name,
             key_name=self.config.key_name,
+            iam_instance_profile=iam_profile_to_use,
         )
 
         if not instance_id:
             logger.error("Failed to launch instance")
             return None
 
-        # Step 7: Get public IP
+        # Step 8: Get public IP
         public_ip = self.ec2_manager.get_instance_public_ip(instance_id)
         if public_ip:
             logger.info("AC server deployed successfully!")

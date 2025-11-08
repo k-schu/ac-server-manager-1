@@ -352,6 +352,7 @@ fi
         user_data: str,
         instance_name: str,
         key_name: Optional[str] = None,
+        iam_instance_profile: Optional[str] = None,
     ) -> Optional[str]:
         """Launch EC2 instance for AC server.
 
@@ -362,6 +363,7 @@ fi
             user_data: User data script
             instance_name: Name tag for the instance
             key_name: SSH key pair name (optional)
+            iam_instance_profile: IAM instance profile name or ARN (optional)
 
         Returns:
             Instance ID, or None if launch failed
@@ -389,6 +391,14 @@ fi
 
             if key_name:
                 launch_params["KeyName"] = key_name
+
+            if iam_instance_profile:
+                # Support both Name and Arn formats
+                if iam_instance_profile.startswith("arn:aws:iam::"):
+                    launch_params["IamInstanceProfile"] = {"Arn": iam_instance_profile}
+                else:
+                    launch_params["IamInstanceProfile"] = {"Name": iam_instance_profile}
+                logger.debug(f"Using IAM instance profile: {iam_instance_profile}")
 
             response = self.ec2_client.run_instances(**launch_params)  # type: ignore[arg-type]
             instance_id = response["Instances"][0]["InstanceId"]

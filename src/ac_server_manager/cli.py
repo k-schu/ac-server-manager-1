@@ -36,6 +36,10 @@ def main() -> None:
 @click.option("--bucket", default="ac-server-packs", help="S3 bucket name")
 @click.option("--instance-name", default="ac-server-instance", help="Instance name tag")
 @click.option("--key-name", help="EC2 key pair name for SSH access")
+@click.option("--iam-instance-profile", help="Existing IAM instance profile name/ARN to use")
+@click.option("--create-iam/--no-create-iam", default=False, help="Automatically create IAM role and instance profile for S3 access (default: off)")
+@click.option("--iam-role-name", help="IAM role name to create (used with --create-iam)")
+@click.option("--iam-instance-profile-name", help="IAM instance profile name to create (used with --create-iam)")
 def deploy(
     pack_file: Path,
     region: str,
@@ -43,6 +47,10 @@ def deploy(
     bucket: str,
     instance_name: str,
     key_name: Optional[str],
+    iam_instance_profile: Optional[str],
+    create_iam: bool,
+    iam_role_name: Optional[str],
+    iam_instance_profile_name: Optional[str],
 ) -> None:
     """Deploy AC server from a Content Manager pack file.
 
@@ -51,6 +59,8 @@ def deploy(
     Example:
         ac-server-manager deploy my-server-pack.tar.gz
         ac-server-manager deploy my-server-pack.tar.gz --region us-west-2 --key-name my-key
+        ac-server-manager deploy my-server-pack.tar.gz --create-iam
+        ac-server-manager deploy my-server-pack.tar.gz --iam-instance-profile my-profile
     """
     config = ServerConfig(
         aws_region=region,
@@ -58,6 +68,10 @@ def deploy(
         s3_bucket_name=bucket,
         instance_name=instance_name,
         key_name=key_name,
+        iam_instance_profile=iam_instance_profile,
+        auto_create_iam=create_iam,
+        iam_role_name=iam_role_name,
+        iam_instance_profile_name=iam_instance_profile_name,
     )
 
     deployer = Deployer(config)
@@ -154,6 +168,10 @@ def terminate(instance_id: Optional[str], instance_name: str, region: str) -> No
 @click.option("--bucket", default="ac-server-packs", help="S3 bucket name")
 @click.option("--instance-name", default="ac-server-instance", help="Instance name tag")
 @click.option("--key-name", help="EC2 key pair name for SSH access")
+@click.option("--iam-instance-profile", help="Existing IAM instance profile name/ARN to use")
+@click.option("--create-iam/--no-create-iam", default=False, help="Automatically create IAM role and instance profile for S3 access (default: off)")
+@click.option("--iam-role-name", help="IAM role name to create (used with --create-iam)")
+@click.option("--iam-instance-profile-name", help="IAM instance profile name to create (used with --create-iam)")
 def redeploy(
     pack_file: Path,
     instance_id: Optional[str],
@@ -162,6 +180,10 @@ def redeploy(
     bucket: str,
     instance_name: str,
     key_name: Optional[str],
+    iam_instance_profile: Optional[str],
+    create_iam: bool,
+    iam_role_name: Optional[str],
+    iam_instance_profile_name: Optional[str],
 ) -> None:
     """Terminate existing instance and redeploy with new pack.
 
@@ -169,6 +191,7 @@ def redeploy(
 
     Example:
         ac-server-manager redeploy new-server-pack.tar.gz
+        ac-server-manager redeploy new-server-pack.tar.gz --create-iam
     """
     config = ServerConfig(
         aws_region=region,
@@ -176,6 +199,10 @@ def redeploy(
         s3_bucket_name=bucket,
         instance_name=instance_name,
         key_name=key_name,
+        iam_instance_profile=iam_instance_profile,
+        auto_create_iam=create_iam,
+        iam_role_name=iam_role_name,
+        iam_instance_profile_name=iam_instance_profile_name,
     )
 
     deployer = Deployer(config)

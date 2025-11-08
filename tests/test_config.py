@@ -18,6 +18,10 @@ def test_server_config_defaults() -> None:
     assert config.security_group_name == "ac-server-sg"
     assert config.s3_bucket_name == "ac-server-packs"
     assert config.pack_file_key is None
+    assert config.auto_create_iam is False
+    assert config.iam_role_name is None
+    assert config.iam_instance_profile_name is None
+    assert config.iam_instance_profile is None
     assert config.server_name == "AC Server"
     assert config.max_players == 8
     assert config.instance_name == "ac-server-instance"
@@ -47,6 +51,9 @@ def test_server_config_from_dict() -> None:
         "instance_type": "t3.large",
         "key_name": "test-key",
         "max_players": 12,
+        "auto_create_iam": True,
+        "iam_role_name": "custom-role",
+        "iam_instance_profile_name": "custom-profile",
         "extra_field": "should be ignored",
     }
 
@@ -56,6 +63,9 @@ def test_server_config_from_dict() -> None:
     assert config.instance_type == "t3.large"
     assert config.key_name == "test-key"
     assert config.max_players == 12
+    assert config.auto_create_iam is True
+    assert config.iam_role_name == "custom-role"
+    assert config.iam_instance_profile_name == "custom-profile"
     assert not hasattr(config, "extra_field")
 
 
