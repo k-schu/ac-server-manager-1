@@ -60,14 +60,16 @@ class Deployer:
                 iam_manager = IAMManager(self.config.aws_region)
                 role_name = self.config.iam_role_name or "ac-server-role"
                 profile_name = self.config.iam_instance_profile_name or "ac-server-instance-profile"
-                
+
                 iam_profile_to_use = iam_manager.ensure_role_and_instance_profile(
                     role_name, profile_name, self.config.s3_bucket_name
                 )
                 logger.info(f"IAM resources configured successfully: {iam_profile_to_use}")
             except Exception as e:
                 logger.error(f"Failed to create IAM resources: {e}")
-                logger.error("Deployment cannot continue without IAM instance profile for S3 access")
+                logger.error(
+                    "Deployment cannot continue without IAM instance profile for S3 access"
+                )
                 return None
 
         # Step 4: Create security group
