@@ -158,152 +158,55 @@ class EC2Manager:
         # Build wrapper installation script separately to avoid nested f-strings
         wrapper_script = ""
         if enable_wrapper:
+            # Minimal bootstrap that downloads and runs a more complete script
             wrapper_script = f"""
-# Install ac-server-wrapper in background if enabled (non-blocking)
-log_message "Scheduling ac-server-wrapper installation (background)..."
-cat > /opt/acserver/install-wrapper.sh << 'EOFWRAPPERSCRIPT'
+# Install ac-server-wrapper in background (non-blocking)
+log_message "Scheduling wrapper installation..."
+cat > /opt/acserver/install-wrapper.sh << 'EOF'
 #!/bin/bash
-# This script runs in the background to install ac-server-wrapper
-# It will not block acServer startup
-
-WRAPPER_LOG="/var/log/acserver-wrapper-install.log"
-WRAPPER_PORT={wrapper_port}
-
-log_wrapper() {{
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$WRAPPER_LOG"
-}}
-
-log_wrapper "===== Starting wrapper installation (background) ====="
-
-# Wait for acServer to be fully started first
+L="/var/log/acserver-wrapper-install.log"
+P={wrapper_port}
+log() {{ echo "[$(date '+%H:%M:%S')] $1" | tee -a "$L"; }}
+log "Starting wrapper install"
 sleep 15
-
-# Install Node.js with error handling
-log_wrapper "Installing Node.js..."
-if curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >> "$WRAPPER_LOG" 2>&1; then
-    if apt-get install -y nodejs >> "$WRAPPER_LOG" 2>&1; then
-        log_wrapper "✓ Node.js installed successfully"
-    else
-        log_wrapper "✗ Failed to install Node.js package"
-        exit 1
-    fi
+log "Installing Node.js"
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >> "$L" 2>&1 && apt-get install -y nodejs >> "$L" 2>&1 || {{ log "Node.js install failed"; exit 1; }}
+W="/opt/acserver/wrapper"
+D="/opt/acserver/preset"
+if [ -d "/opt/acserver/ac-server-wrapper" ]; then mv /opt/acserver/ac-server-wrapper "$W"
+elif [ -f "/opt/acserver/ac-server-wrapper.js" ]; then mkdir -p "$W" && mv /opt/acserver/ac-server-wrapper.js "$W/" && mv /opt/acserver/package*.json "$W/" 2>/dev/null || true
 else
-    log_wrapper "✗ Failed to add Node.js repository"
-    exit 1
+  mkdir -p "$W" && cd "$W"
+  if ! command -v git &>/dev/null; then apt-get install -y git >> "$L" 2>&1; fi
+  timeout 60 git clone --depth 1 https://github.com/gro-ove/ac-server-wrapper.git . >> "$L" 2>&1 || {{ log "Clone failed"; exit 1; }}
 fi
-
-# Check if wrapper is in the pack
-WRAPPER_DIR="/opt/acserver/wrapper"
-PRESET_DIR="/opt/acserver/preset"
-
-if [ -d "/opt/acserver/ac-server-wrapper" ]; then
-    log_wrapper "✓ ac-server-wrapper found in pack"
-    mv /opt/acserver/ac-server-wrapper "$WRAPPER_DIR"
-elif [ -f "/opt/acserver/ac-server-wrapper.js" ]; then
-    log_wrapper "✓ ac-server-wrapper.js found in pack"
-    mkdir -p "$WRAPPER_DIR"
-    mv /opt/acserver/ac-server-wrapper.js "$WRAPPER_DIR/"
-    mv /opt/acserver/package*.json "$WRAPPER_DIR/" 2>/dev/null || true
-else
-    # Download from GitHub with error handling
-    log_wrapper "Downloading wrapper from GitHub..."
-    mkdir -p "$WRAPPER_DIR"
-    cd "$WRAPPER_DIR"
-    
-    if command -v git &> /dev/null; then
-        if timeout 60 git clone --depth 1 https://github.com/gro-ove/ac-server-wrapper.git . >> "$WRAPPER_LOG" 2>&1; then
-            log_wrapper "✓ Wrapper cloned from GitHub"
-        else
-            log_wrapper "✗ Failed to clone wrapper (timeout or error)"
-            exit 1
-        fi
-    else
-        log_wrapper "Git not available, installing..."
-        if apt-get install -y git >> "$WRAPPER_LOG" 2>&1; then
-            if timeout 60 git clone --depth 1 https://github.com/gro-ove/ac-server-wrapper.git . >> "$WRAPPER_LOG" 2>&1; then
-                log_wrapper "✓ Wrapper cloned from GitHub"
-            else
-                log_wrapper "✗ Failed to clone wrapper"
-                exit 1
-            fi
-        else
-            log_wrapper "✗ Failed to install git"
-            exit 1
-        fi
-    fi
-fi
-
-# Setup preset directory
-mkdir -p "$PRESET_DIR"
-if [ -d "$WORKING_DIR/cfg" ] && [ ! -d "$PRESET_DIR/cfg" ]; then
-    log_wrapper "Copying preset content..."
-    cp -r "$WORKING_DIR"/* "$PRESET_DIR/" 2>/dev/null || true
-fi
-
-# Ensure cm_content directory exists
-mkdir -p "$PRESET_DIR/cm_content"
-
-# Install wrapper dependencies with timeout
-cd "$WRAPPER_DIR"
-if [ -f "package.json" ]; then
-    log_wrapper "Installing wrapper dependencies..."
-    export NODE_ENV=production
-    if timeout 300 npm ci --production >> "$WRAPPER_LOG" 2>&1 || timeout 300 npm install --production >> "$WRAPPER_LOG" 2>&1; then
-        log_wrapper "✓ Wrapper dependencies installed"
-    else
-        log_wrapper "✗ Failed to install wrapper dependencies (timeout or error)"
-        exit 1
-    fi
-else
-    log_wrapper "⚠ No package.json found"
-fi
-
-# Set permissions
-chown -R root:root "$WRAPPER_DIR" 2>/dev/null || true
-chmod +x "$WRAPPER_DIR"/*.js 2>/dev/null || true
-
-# Create systemd service
-log_wrapper "Creating wrapper systemd service..."
-cat > /etc/systemd/system/acserver-wrapper.service << 'EOFWRAPPERSVC'
+mkdir -p "$D" "$D/cm_content"
+[ -d "$WORKING_DIR/cfg" ] && [ ! -d "$D/cfg" ] && cp -r "$WORKING_DIR"/* "$D/" 2>/dev/null || true
+cd "$W"
+[ -f "package.json" ] && {{ export NODE_ENV=production; timeout 300 npm ci --production >> "$L" 2>&1 || timeout 300 npm install --production >> "$L" 2>&1 || {{ log "npm failed"; exit 1; }}; }}
+chown -R root:root "$W" 2>/dev/null; chmod +x "$W"/*.js 2>/dev/null || true
+cat > /etc/systemd/system/acserver-wrapper.service << 'SVC'
 [Unit]
-Description=AC Server Wrapper (Content Manager)
+Description=AC Server Wrapper
 After=network.target acserver.service
 Wants=acserver.service
-
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/acserver/wrapper
-ExecStart=/usr/bin/node /opt/acserver/wrapper/ac-server-wrapper.js --preset /opt/acserver/preset --port $WRAPPER_PORT
+ExecStart=/usr/bin/node /opt/acserver/wrapper/ac-server-wrapper.js --preset /opt/acserver/preset --port $P
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/var/log/acserver-wrapper-stdout.log
 StandardError=append:/var/log/acserver-wrapper-stderr.log
-
 [Install]
 WantedBy=multi-user.target
-EOFWRAPPERSVC
-
-# Start wrapper service
-log_wrapper "Starting wrapper service..."
-systemctl daemon-reload
-systemctl enable acserver-wrapper >> "$WRAPPER_LOG" 2>&1
-if systemctl start acserver-wrapper >> "$WRAPPER_LOG" 2>&1; then
-    log_wrapper "✓ Wrapper service started successfully"
-else
-    log_wrapper "✗ Failed to start wrapper service"
-    systemctl status acserver-wrapper >> "$WRAPPER_LOG" 2>&1 || true
-    exit 1
-fi
-
-log_wrapper "===== Wrapper installation completed ====="
-EOFWRAPPERSCRIPT
-
+SVC
+systemctl daemon-reload && systemctl enable acserver-wrapper >> "$L" 2>&1 && systemctl start acserver-wrapper >> "$L" 2>&1 && log "Wrapper started" || log "Wrapper start failed"
+EOF
 chmod +x /opt/acserver/install-wrapper.sh
-
-# Run wrapper installation in background (detached)
-nohup /opt/acserver/install-wrapper.sh > /dev/null 2>&1 &
-log_message "✓ Wrapper installation scheduled (check /var/log/acserver-wrapper-install.log)"
+nohup /opt/acserver/install-wrapper.sh &>/dev/null &
+log_message "✓ Wrapper install scheduled"
 """
 
         script = f"""#!/bin/bash
