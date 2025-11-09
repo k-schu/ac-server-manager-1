@@ -140,6 +140,46 @@ class S3Manager:
             logger.error(f"Error deleting pack: {e}")
             return False
 
+    def upload_bytes(self, key: str, bytes_data: bytes) -> bool:
+        """Upload bytes data to S3.
+
+        Args:
+            key: S3 object key
+            bytes_data: Bytes data to upload
+
+        Returns:
+            True if upload succeeded, False otherwise
+        """
+        try:
+            self.s3_client.put_object(Bucket=self.bucket_name, Key=key, Body=bytes_data)
+            logger.info(f"Uploaded {len(bytes_data)} bytes to s3://{self.bucket_name}/{key}")
+            return True
+        except ClientError as e:
+            logger.error(f"Error uploading bytes: {e}")
+            return False
+
+    def generate_presigned_url(self, key: str, expiration_secs: int = 3600) -> Optional[str]:
+        """Generate a presigned URL for downloading an object.
+
+        Args:
+            key: S3 object key
+            expiration_secs: URL expiration time in seconds (default: 3600 = 1 hour)
+
+        Returns:
+            Presigned URL string, or None if generation failed
+        """
+        try:
+            url = self.s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket_name, "Key": key},
+                ExpiresIn=expiration_secs,
+            )
+            logger.debug(f"Generated presigned URL for s3://{self.bucket_name}/{key}")
+            return url
+        except ClientError as e:
+            logger.error(f"Error generating presigned URL: {e}")
+            return None
+
     def delete_bucket_recursive(self, dry_run: bool = False) -> bool:
         """Recursively delete S3 bucket including all objects and versions.
 

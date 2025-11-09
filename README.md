@@ -150,9 +150,20 @@ mypy src/
 ## Architecture
 
 - **EC2**: Ubuntu 22.04 LTS instances running Assetto Corsa server
-- **S3**: Stores server pack files
+- **S3**: Stores server pack files and bootstrap scripts
 - **IAM**: Optional automatic role creation for secure S3 access
 - **Security Groups**: Configured for AC server ports (9600 TCP/UDP, 8081 HTTP)
+
+### Bootstrap Process
+
+To handle large server configurations and avoid EC2's 16KB user-data limit, the deployment uses a two-stage bootstrap process:
+
+1. **Bootstrap Upload**: The full deployment script (which can be 18+ KB) is uploaded to S3 at `bootstrap/bootstrap-{timestamp}-{uuid}.sh`
+2. **Minimal User-Data**: EC2 instance launches with a minimal ~860 byte script that:
+   - Downloads the bootstrap script from S3 using a presigned URL (valid for 1 hour)
+   - Executes the full deployment script
+
+This approach ensures reliable deployments regardless of pack size or configuration complexity.
 
 ## Cost Estimation
 

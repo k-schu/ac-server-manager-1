@@ -456,3 +456,102 @@ def test_get_instance_details_no_public_ip(ec2_manager: EC2Manager) -> None:
     assert result["instance_id"] == "i-12345"
     assert result["state"] == "stopped"
     assert result["public_ip"] is None
+
+
+def test_upload_bootstrap_to_s3_success(ec2_manager: EC2Manager) -> None:
+    """Test successful bootstrap script upload to S3."""
+    from unittest.mock import MagicMock
+
+    mock_s3_manager = MagicMock()
+    mock_s3_manager.bucket_name = "test-bucket"
+    mock_s3_manager.upload_bytes = MagicMock(return_value=True)
+    mock_s3_manager.generate_presigned_url = MagicMock(
+        return_value="https://test-bucket.s3.amazonaws.com/bootstrap/test.sh?signature=..."
+    )
+
+    bootstrap_script = "#!/bin/bash\necho 'test'"
+    result = ec2_manager.upload_bootstrap_to_s3(mock_s3_manager, bootstrap_script)
+
+    assert result is not None
+    s3_key, presigned_url = result
+    assert s3_key.startswith("bootstrap/bootstrap-")
+    assert s3_key.endswith(".sh")
+    assert presigned_url == "https://test-bucket.s3.amazonaws.com/bootstrap/test.sh?signature=..."
+    mock_s3_manager.upload_bytes.assert_called_once()
+    mock_s3_manager.generate_presigned_url.assert_called_once()
+
+
+def test_upload_bootstrap_to_s3_upload_fails(ec2_manager: EC2Manager) -> None:
+    """Test bootstrap upload when S3 upload fails."""
+    from unittest.mock import MagicMock
+
+    mock_s3_manager = MagicMock()
+    mock_s3_manager.upload_bytes = MagicMock(return_value=False)
+
+    bootstrap_script = "#!/bin/bash\necho 'test'"
+    result = ec2_manager.upload_bootstrap_to_s3(mock_s3_manager, bootstrap_script)
+
+    assert result is None
+
+
+def test_upload_bootstrap_to_s3_presigned_url_fails(ec2_manager: EC2Manager) -> None:
+    """Test bootstrap upload when presigned URL generation fails."""
+    from unittest.mock import MagicMock
+
+    mock_s3_manager = MagicMock()
+    mock_s3_manager.upload_bytes = MagicMock(return_value=True)
+    mock_s3_manager.generate_presigned_url = MagicMock(return_value=None)
+
+    bootstrap_script = "#!/bin/bash\necho 'test'"
+    result = ec2_manager.upload_bootstrap_to_s3(mock_s3_manager, bootstrap_script)
+
+    assert result is None
+
+
+def test_create_minimal_user_data_with_presigned_url(ec2_manager: EC2Manager) -> None:
+    """Test minimal user data script creation with presigned URL."""
+    presigned_url = "https://test-bucket.s3.amazonaws.com/bootstrap/test.sh?X-Amz-Signature=..."
+
+    user_data = ec2_manager.create_minimal_user_data_with_presigned_url(presigned_url)
+
+    # Check script structure
+    assert "#!/bin/bash" in user_data
+    assert "set -e" in user_data
+
+    # Check download logic with both curl and wget
+    assert "curl" in user_data
+    assert "wget" in user_data
+    assert presigned_url in user_data
+
+    # Check bootstrap path
+    assert "/tmp/bootstrap.sh" in user_data
+    assert "BOOTSTRAP_PATH" in user_data
+
+    # Check execution
+    assert "chmod +x" in user_data
+    assert 'exec "$BOOTSTRAP_PATH"' in user_data
+
+    # Verify size is small
+    size = len(user_data.encode("utf-8"))
+    assert size < 2000, f"Minimal user data should be < 2KB, got {size} bytes"
+
+
+def test_create_minimal_user_data_size_is_under_16kb(ec2_manager: EC2Manager) -> None:
+    """Test that minimal user data stays well under 16KB limit."""
+    # Even with a very long presigned URL (AWS URLs can be quite long)
+    long_presigned_url = (
+        "https://test-bucket.s3.us-east-1.amazonaws.com/"
+        "bootstrap/bootstrap-20231201-123456-abcd1234.sh?"
+        "X-Amz-Algorithm=AWS4-HMAC-SHA256&"
+        "X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20231201%2Fus-east-1%2Fs3%2Faws4_request&"
+        "X-Amz-Date=20231201T120000Z&"
+        "X-Amz-Expires=3600&"
+        "X-Amz-SignedHeaders=host&"
+        "X-Amz-Signature=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+    )
+
+    user_data = ec2_manager.create_minimal_user_data_with_presigned_url(long_presigned_url)
+
+    size = len(user_data.encode("utf-8"))
+    assert size < 16384, f"User data must be under 16KB, got {size} bytes"
+    assert size < 2000, f"Minimal user data should be well under 16KB, got {size} bytes"

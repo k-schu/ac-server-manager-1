@@ -207,3 +207,70 @@ def test_delete_bucket_recursive_dry_run(s3_manager: S3Manager) -> None:
     # Ensure no actual deletions happened in dry-run mode
     s3_manager.s3_client.delete_objects.assert_not_called()
     s3_manager.s3_client.delete_bucket.assert_not_called()
+
+
+def test_upload_bytes_success(s3_manager: S3Manager) -> None:
+    """Test successful bytes upload."""
+    test_data = b"test bootstrap script content"
+    s3_manager.s3_client.put_object = MagicMock()
+
+    result = s3_manager.upload_bytes("bootstrap/test.sh", test_data)
+
+    assert result is True
+    s3_manager.s3_client.put_object.assert_called_once_with(
+        Bucket="test-bucket", Key="bootstrap/test.sh", Body=test_data
+    )
+
+
+def test_upload_bytes_failure(s3_manager: S3Manager) -> None:
+    """Test bytes upload failure."""
+    from botocore.exceptions import ClientError
+
+    test_data = b"test data"
+    s3_manager.s3_client.put_object = MagicMock(
+        side_effect=ClientError({"Error": {"Code": "AccessDenied"}}, "put_object")
+    )
+
+    result = s3_manager.upload_bytes("bootstrap/test.sh", test_data)
+
+    assert result is False
+
+
+def test_generate_presigned_url_success(s3_manager: S3Manager) -> None:
+    """Test successful presigned URL generation."""
+    expected_url = "https://test-bucket.s3.amazonaws.com/bootstrap/test.sh?X-Amz-Signature=..."
+    s3_manager.s3_client.generate_presigned_url = MagicMock(return_value=expected_url)
+
+    result = s3_manager.generate_presigned_url("bootstrap/test.sh", expiration_secs=3600)
+
+    assert result == expected_url
+    s3_manager.s3_client.generate_presigned_url.assert_called_once_with(
+        "get_object",
+        Params={"Bucket": "test-bucket", "Key": "bootstrap/test.sh"},
+        ExpiresIn=3600,
+    )
+
+
+def test_generate_presigned_url_default_expiration(s3_manager: S3Manager) -> None:
+    """Test presigned URL generation with default expiration."""
+    expected_url = "https://test-bucket.s3.amazonaws.com/bootstrap/test.sh?X-Amz-Signature=..."
+    s3_manager.s3_client.generate_presigned_url = MagicMock(return_value=expected_url)
+
+    result = s3_manager.generate_presigned_url("bootstrap/test.sh")
+
+    assert result == expected_url
+    call_args = s3_manager.s3_client.generate_presigned_url.call_args
+    assert call_args[1]["ExpiresIn"] == 3600  # Default 1 hour
+
+
+def test_generate_presigned_url_failure(s3_manager: S3Manager) -> None:
+    """Test presigned URL generation failure."""
+    from botocore.exceptions import ClientError
+
+    s3_manager.s3_client.generate_presigned_url = MagicMock(
+        side_effect=ClientError({"Error": {"Code": "NoSuchKey"}}, "generate_presigned_url")
+    )
+
+    result = s3_manager.generate_presigned_url("bootstrap/nonexistent.sh")
+
+    assert result is None

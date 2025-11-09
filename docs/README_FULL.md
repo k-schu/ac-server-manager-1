@@ -250,14 +250,21 @@ Estimated costs:
 ### Deployment Process
 
 1. **S3 Upload**: Server pack is uploaded to S3
-2. **Security Group**: Creates/reuses security group with game ports open
-3. **EC2 Launch**: Launches Ubuntu instance with appropriate configuration
-4. **Initialization**: Downloads pack from S3, extracts, and starts server
-5. **Systemd Service**: Server runs as a systemd service for automatic restart
-6. **Post-Boot Validation**: Automated validation ensures server is running correctly:
+2. **Bootstrap Upload**: Full deployment script is uploaded to S3 with a presigned URL (1 hour expiration)
+3. **Security Group**: Creates/reuses security group with game ports open
+4. **EC2 Launch**: Launches Ubuntu instance with minimal user-data (~860 bytes) that downloads and executes the bootstrap script
+5. **Initialization**: Downloads pack from S3, extracts, and starts server
+6. **Systemd Service**: Server runs as a systemd service for automatic restart
+7. **Post-Boot Validation**: Automated validation ensures server is running correctly:
    - **Process Check**: Verifies acServer process is running
    - **Port Validation**: Confirms TCP/UDP 9600 and TCP 8081 are listening
    - **Log Analysis**: Scans server logs for configuration errors or missing content
+
+**Note on User-Data Size Limit**: EC2 has a 16KB limit on user-data. To handle large configurations and wrapper installations, the deployment uses a two-stage bootstrap:
+- Stage 1: Minimal user-data script (~860 bytes) downloads the full bootstrap from S3
+- Stage 2: Full bootstrap script executes the complete server setup
+
+This ensures deployments work reliably regardless of pack size or configuration complexity.
    - **Exit Codes**: Returns non-zero exit code if validation fails, ensuring deployment automation detects issues
 
 ## Development

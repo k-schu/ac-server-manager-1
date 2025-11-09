@@ -45,6 +45,12 @@ def test_deploy_success(deployer: Deployer, tmp_path: Path) -> None:
     deployer.ec2_manager.create_security_group = MagicMock(return_value="sg-12345")
     deployer.ec2_manager.get_ubuntu_ami = MagicMock(return_value="ami-12345")
     deployer.ec2_manager.create_user_data_script = MagicMock(return_value="#!/bin/bash")
+    deployer.ec2_manager.upload_bootstrap_to_s3 = MagicMock(
+        return_value=("bootstrap/test.sh", "https://presigned-url")
+    )
+    deployer.ec2_manager.create_minimal_user_data_with_presigned_url = MagicMock(
+        return_value="#!/bin/bash\nminimal"
+    )
     deployer.ec2_manager.launch_instance = MagicMock(return_value="i-12345")
     deployer.ec2_manager.get_instance_public_ip = MagicMock(return_value="1.2.3.4")
 
@@ -55,6 +61,8 @@ def test_deploy_success(deployer: Deployer, tmp_path: Path) -> None:
     deployer.s3_manager.upload_pack.assert_called_once_with(pack_file)
     deployer.ec2_manager.create_security_group.assert_called_once()
     deployer.ec2_manager.get_ubuntu_ami.assert_called_once()
+    deployer.ec2_manager.upload_bootstrap_to_s3.assert_called_once()
+    deployer.ec2_manager.create_minimal_user_data_with_presigned_url.assert_called_once()
     deployer.ec2_manager.launch_instance.assert_called_once()
 
 
@@ -122,6 +130,12 @@ def test_deploy_instance_launch_fails(deployer: Deployer, tmp_path: Path) -> Non
     deployer.ec2_manager.create_security_group = MagicMock(return_value="sg-12345")
     deployer.ec2_manager.get_ubuntu_ami = MagicMock(return_value="ami-12345")
     deployer.ec2_manager.create_user_data_script = MagicMock(return_value="#!/bin/bash")
+    deployer.ec2_manager.upload_bootstrap_to_s3 = MagicMock(
+        return_value=("bootstrap/test.sh", "https://presigned-url")
+    )
+    deployer.ec2_manager.create_minimal_user_data_with_presigned_url = MagicMock(
+        return_value="#!/bin/bash\nminimal"
+    )
     deployer.ec2_manager.launch_instance = MagicMock(return_value=None)
 
     result = deployer.deploy(pack_file)
@@ -284,5 +298,22 @@ def test_get_status_no_instance_found(deployer: Deployer) -> None:
     deployer.ec2_manager.find_instances_by_name = MagicMock(return_value=[])
 
     result = deployer.get_status()
+
+    assert result is None
+
+
+def test_deploy_bootstrap_upload_fails(deployer: Deployer, tmp_path: Path) -> None:
+    """Test deployment when bootstrap upload to S3 fails."""
+    pack_file = tmp_path / "test-pack.tar.gz"
+    pack_file.write_text("test content")
+
+    deployer.s3_manager.create_bucket = MagicMock(return_value=True)
+    deployer.s3_manager.upload_pack = MagicMock(return_value="packs/test-pack.tar.gz")
+    deployer.ec2_manager.create_security_group = MagicMock(return_value="sg-12345")
+    deployer.ec2_manager.get_ubuntu_ami = MagicMock(return_value="ami-12345")
+    deployer.ec2_manager.create_user_data_script = MagicMock(return_value="#!/bin/bash")
+    deployer.ec2_manager.upload_bootstrap_to_s3 = MagicMock(return_value=None)
+
+    result = deployer.deploy(pack_file)
 
     assert result is None
