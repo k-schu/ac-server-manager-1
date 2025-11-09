@@ -311,3 +311,153 @@ def test_terminate_all_confirmation_required(runner: CliRunner) -> None:
         assert "Confirmation failed" in result.output
         # Should not have called any AWS operations
         mock_ec2.terminate_instance_and_wait.assert_not_called()
+
+
+def test_deploy_accepts_wrapper_options(runner: CliRunner) -> None:
+    """Test that deploy command accepts --enable-wrapper and --wrapper-port options."""
+    from ac_server_manager.cli import deploy
+    from pathlib import Path
+    import tempfile
+
+    with (
+        patch("ac_server_manager.cli.Deployer") as MockDeployer,
+        tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file,
+    ):
+        tmp_path = Path(tmp_file.name)
+
+        try:
+            mock_deployer_instance = MagicMock()
+            mock_deployer_instance.deploy.return_value = "i-test123"
+            MockDeployer.return_value = mock_deployer_instance
+
+            # Test with --enable-wrapper and custom port
+            result = runner.invoke(
+                deploy, [str(tmp_path), "--enable-wrapper", "--wrapper-port", "9000"]
+            )
+
+            assert result.exit_code == 0
+            # Verify Deployer was called with correct config
+            MockDeployer.assert_called_once()
+            config = MockDeployer.call_args[0][0]
+            assert config.enable_wrapper is True
+            assert config.wrapper_port == 9000
+        finally:
+            tmp_path.unlink()
+
+
+def test_deploy_wrapper_defaults(runner: CliRunner) -> None:
+    """Test that deploy command uses correct defaults for wrapper options."""
+    from ac_server_manager.cli import deploy
+    from pathlib import Path
+    import tempfile
+
+    with (
+        patch("ac_server_manager.cli.Deployer") as MockDeployer,
+        tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file,
+    ):
+        tmp_path = Path(tmp_file.name)
+
+        try:
+            mock_deployer_instance = MagicMock()
+            mock_deployer_instance.deploy.return_value = "i-test123"
+            MockDeployer.return_value = mock_deployer_instance
+
+            # Test without wrapper options - should use defaults
+            result = runner.invoke(deploy, [str(tmp_path)])
+
+            assert result.exit_code == 0
+            MockDeployer.assert_called_once()
+            config = MockDeployer.call_args[0][0]
+            assert config.enable_wrapper is False
+            assert config.wrapper_port == 8082
+        finally:
+            tmp_path.unlink()
+
+
+def test_deploy_no_enable_wrapper(runner: CliRunner) -> None:
+    """Test that deploy command accepts --no-enable-wrapper option."""
+    from ac_server_manager.cli import deploy
+    from pathlib import Path
+    import tempfile
+
+    with (
+        patch("ac_server_manager.cli.Deployer") as MockDeployer,
+        tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file,
+    ):
+        tmp_path = Path(tmp_file.name)
+
+        try:
+            mock_deployer_instance = MagicMock()
+            mock_deployer_instance.deploy.return_value = "i-test123"
+            MockDeployer.return_value = mock_deployer_instance
+
+            # Test explicit --no-enable-wrapper
+            result = runner.invoke(deploy, [str(tmp_path), "--no-enable-wrapper"])
+
+            assert result.exit_code == 0
+            MockDeployer.assert_called_once()
+            config = MockDeployer.call_args[0][0]
+            assert config.enable_wrapper is False
+        finally:
+            tmp_path.unlink()
+
+
+def test_redeploy_accepts_wrapper_options(runner: CliRunner) -> None:
+    """Test that redeploy command accepts --enable-wrapper and --wrapper-port options."""
+    from ac_server_manager.cli import redeploy
+    from pathlib import Path
+    import tempfile
+
+    with (
+        patch("ac_server_manager.cli.Deployer") as MockDeployer,
+        tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file,
+    ):
+        tmp_path = Path(tmp_file.name)
+
+        try:
+            mock_deployer_instance = MagicMock()
+            mock_deployer_instance.redeploy.return_value = "i-test456"
+            MockDeployer.return_value = mock_deployer_instance
+
+            # Test with --enable-wrapper and custom port
+            result = runner.invoke(
+                redeploy, [str(tmp_path), "--enable-wrapper", "--wrapper-port", "9001"]
+            )
+
+            assert result.exit_code == 0
+            MockDeployer.assert_called_once()
+            config = MockDeployer.call_args[0][0]
+            assert config.enable_wrapper is True
+            assert config.wrapper_port == 9001
+        finally:
+            tmp_path.unlink()
+
+
+def test_redeploy_wrapper_defaults(runner: CliRunner) -> None:
+    """Test that redeploy command uses correct defaults for wrapper options."""
+    from ac_server_manager.cli import redeploy
+    from pathlib import Path
+    import tempfile
+
+    with (
+        patch("ac_server_manager.cli.Deployer") as MockDeployer,
+        tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file,
+    ):
+        tmp_path = Path(tmp_file.name)
+
+        try:
+            mock_deployer_instance = MagicMock()
+            mock_deployer_instance.redeploy.return_value = "i-test456"
+            MockDeployer.return_value = mock_deployer_instance
+
+            # Test without wrapper options - should use defaults
+            result = runner.invoke(redeploy, [str(tmp_path)])
+
+            assert result.exit_code == 0
+            MockDeployer.assert_called_once()
+            config = MockDeployer.call_args[0][0]
+            assert config.enable_wrapper is False
+            assert config.wrapper_port == 8082
+        finally:
+            tmp_path.unlink()
+

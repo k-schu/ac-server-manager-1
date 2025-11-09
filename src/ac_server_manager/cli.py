@@ -177,6 +177,17 @@ def main() -> None:
     "--iam-instance-profile-name",
     help="IAM instance profile name to create (used with --create-iam)",
 )
+@click.option(
+    "--enable-wrapper/--no-enable-wrapper",
+    default=False,
+    help="Enable ac-server-wrapper for CM content downloads (default: off)",
+)
+@click.option(
+    "--wrapper-port",
+    type=int,
+    default=8082,
+    help="Port for ac-server-wrapper (default: 8082)",
+)
 def deploy(
     pack_file: Path,
     region: str,
@@ -188,6 +199,8 @@ def deploy(
     create_iam: bool,
     iam_role_name: Optional[str],
     iam_instance_profile_name: Optional[str],
+    enable_wrapper: bool,
+    wrapper_port: int,
 ) -> None:
     """Deploy AC server from a Content Manager pack file.
 
@@ -209,6 +222,8 @@ def deploy(
         auto_create_iam=create_iam,
         iam_role_name=iam_role_name,
         iam_instance_profile_name=iam_instance_profile_name,
+        enable_wrapper=enable_wrapper,
+        wrapper_port=wrapper_port,
     )
 
     deployer = Deployer(config)
@@ -495,6 +510,17 @@ def terminate_all(
     "--iam-instance-profile-name",
     help="IAM instance profile name to create (used with --create-iam)",
 )
+@click.option(
+    "--enable-wrapper/--no-enable-wrapper",
+    default=False,
+    help="Enable ac-server-wrapper for CM content downloads (default: off)",
+)
+@click.option(
+    "--wrapper-port",
+    type=int,
+    default=8082,
+    help="Port for ac-server-wrapper (default: 8082)",
+)
 def redeploy(
     pack_file: Path,
     instance_id: Optional[str],
@@ -507,6 +533,8 @@ def redeploy(
     create_iam: bool,
     iam_role_name: Optional[str],
     iam_instance_profile_name: Optional[str],
+    enable_wrapper: bool,
+    wrapper_port: int,
 ) -> None:
     """Terminate existing instance and redeploy with new pack.
 
@@ -526,6 +554,8 @@ def redeploy(
         auto_create_iam=create_iam,
         iam_role_name=iam_role_name,
         iam_instance_profile_name=iam_instance_profile_name,
+        enable_wrapper=enable_wrapper,
+        wrapper_port=wrapper_port,
     )
 
     deployer = Deployer(config)
