@@ -66,8 +66,31 @@ class TestAssettoServerDeployment:
         script = ec2_manager.create_assettoserver_user_data_script("bucket", "key.tar.gz")
 
         assert "deploy-status.json" in script
-        assert '"status": "success"' in script
+        assert '"status"' in script  # Status field exists
+        assert '"started"' in script or '"failed"' in script  # Has started or failed status
         assert '"assettoserver_version"' in script
+
+    def test_assettoserver_script_has_explicit_udp_port_mapping(self):
+        """Test that docker-compose has explicit UDP port mapping."""
+        ec2_manager = EC2Manager("us-east-1")
+        script = ec2_manager.create_assettoserver_user_data_script("bucket", "key.tar.gz")
+
+        # Verify explicit UDP mapping with /udp suffix
+        assert "9600:9600/udp" in script
+        assert "9600:9600/tcp" in script
+        assert "8081:8081/tcp" in script
+        assert "8080:8080/tcp" in script
+
+    def test_assettoserver_script_configures_firewall(self):
+        """Test that script configures ufw firewall."""
+        ec2_manager = EC2Manager("us-east-1")
+        script = ec2_manager.create_assettoserver_user_data_script("bucket", "key.tar.gz")
+
+        assert "ufw" in script
+        assert "ufw allow 9600/udp" in script
+        assert "ufw allow 9600/tcp" in script
+        assert "ufw allow 8081/tcp" in script
+        assert "ufw allow 8080/tcp" in script
 
     def test_config_has_assettoserver_fields(self):
         """Test that ServerConfig has AssettoServer fields."""

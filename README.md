@@ -153,11 +153,40 @@ ac-server-manager terminate-all --skip-bucket
 ac-server-manager deploy server-pack.tar.gz --use-assettoserver --assettoserver-version v0.0.54
 ```
 
+## Health Check and Monitoring
+
+### AssettoServer Health Check
+
+For AssettoServer deployments, a health check script is available to verify the server is functioning correctly:
+
+```bash
+# SSH to the instance
+ssh -i your-key.pem ubuntu@<instance-ip>
+
+# Run the health check
+sudo bash /usr/local/bin/check_assettoserver_instance.sh
+```
+
+The health check verifies:
+- ✓ Docker container is running
+- ✓ UDP port 9600 is listening (critical for player connections)
+- ✓ TCP ports 9600, 8081, 8080 are listening
+- ✓ HTTP endpoints are responding
+- ✓ No critical errors in container logs
+
+**Note**: UDP port mapping is critical for player connectivity. If players cannot connect, verify:
+1. Security group allows UDP on port 9600
+2. Docker compose has explicit `/udp` port mapping
+3. Host firewall (ufw) allows UDP traffic
+
+See [AssettoServer Integration Guide](docs/ASSETTOSERVER_INTEGRATION.md) for detailed troubleshooting.
+
 ## Documentation
 
 For detailed documentation, troubleshooting, and advanced usage, see:
 
 - **[Full Documentation](docs/README_FULL.md)** - Complete guide with troubleshooting
+- **[AssettoServer Integration](docs/ASSETTOSERVER_INTEGRATION.md)** - UDP mapping, security groups, and health checks
 - **[Contributing Guide](CONTRIBUTING.md)** - How to contribute
 - **[Examples](EXAMPLES.md)** - Usage examples and recipes
 
