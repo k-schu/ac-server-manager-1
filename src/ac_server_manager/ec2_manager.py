@@ -1,6 +1,8 @@
 """EC2 operations for AC Server Manager."""
 
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 import boto3
@@ -708,6 +710,77 @@ else
     write_status true "$PUBLIC_IP"
     exit 0
 fi
+"""
+        return script
+
+    def upload_bootstrap_to_s3(
+        self, s3_manager, bootstrap_script: str
+    ) -> Optional[tuple[str, str]]:
+        """Upload bootstrap script to S3 and return the key and presigned URL.
+
+        Args:
+            s3_manager: S3Manager instance for uploading
+            bootstrap_script: Bootstrap script content as string
+
+        Returns:
+            Tuple of (s3_key, presigned_url) or None if upload failed
+        """
+        # Generate unique key with timestamp and UUID
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        s3_key = f"bootstrap/bootstrap-{timestamp}-{unique_id}.sh"
+
+        # Upload to S3
+        bootstrap_bytes = bootstrap_script.encode("utf-8")
+        if not s3_manager.upload_bytes(s3_key, bootstrap_bytes):
+            logger.error("Failed to upload bootstrap script to S3")
+            return None
+
+        # Generate presigned URL (1 hour expiration)
+        presigned_url = s3_manager.generate_presigned_url(s3_key, expiration_secs=3600)
+        if not presigned_url:
+            logger.error("Failed to generate presigned URL for bootstrap script")
+            return None
+
+        logger.info(f"Uploaded bootstrap script to s3://{s3_manager.bucket_name}/{s3_key}")
+        return s3_key, presigned_url
+
+    def create_minimal_user_data_with_presigned_url(self, presigned_url: str) -> str:
+        """Create minimal user data script that downloads and executes bootstrap from S3.
+
+        Args:
+            presigned_url: Presigned S3 URL to download bootstrap script
+
+        Returns:
+            Minimal user data script as string
+        """
+        script = f"""#!/bin/bash
+set -e
+
+# Download bootstrap script from S3
+BOOTSTRAP_PATH="/tmp/bootstrap.sh"
+echo "Downloading bootstrap script..."
+
+# Try curl first, then wget
+if command -v curl &>/dev/null; then
+    curl -fsSL -o "$BOOTSTRAP_PATH" '{presigned_url}'
+elif command -v wget &>/dev/null; then
+    wget -q -O "$BOOTSTRAP_PATH" '{presigned_url}'
+else
+    echo "Error: Neither curl nor wget available"
+    exit 1
+fi
+
+# Verify download
+if [ ! -f "$BOOTSTRAP_PATH" ] || [ ! -s "$BOOTSTRAP_PATH" ]; then
+    echo "Error: Failed to download bootstrap script"
+    exit 1
+fi
+
+# Make executable and run
+chmod +x "$BOOTSTRAP_PATH"
+echo "Executing bootstrap script..."
+exec "$BOOTSTRAP_PATH"
 """
         return script
 

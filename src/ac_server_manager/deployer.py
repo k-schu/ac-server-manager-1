@@ -89,15 +89,38 @@ class Deployer:
             logger.error("Failed to get Ubuntu AMI")
             return None
 
-        # Step 6: Create user data script
-        user_data = self.ec2_manager.create_user_data_script(
+        # Step 6: Create full bootstrap script
+        bootstrap_script = self.ec2_manager.create_user_data_script(
             self.config.s3_bucket_name,
             s3_key,
             enable_wrapper=self.config.enable_wrapper,
             wrapper_port=self.config.wrapper_port,
         )
 
-        # Step 7: Launch instance
+        # Step 7: Upload bootstrap script to S3 and get presigned URL
+        upload_result = self.ec2_manager.upload_bootstrap_to_s3(
+            self.s3_manager, bootstrap_script
+        )
+        if not upload_result:
+            logger.error("Failed to upload bootstrap script to S3")
+            return None
+
+        bootstrap_key, presigned_url = upload_result
+        logger.info(f"Bootstrap script uploaded to S3: {bootstrap_key}")
+
+        # Step 8: Create minimal user data that downloads and executes bootstrap
+        user_data = self.ec2_manager.create_minimal_user_data_with_presigned_url(presigned_url)
+        user_data_size = len(user_data.encode("utf-8"))
+        logger.info(f"User data size: {user_data_size} bytes ({user_data_size/1024:.2f} KB)")
+
+        if user_data_size >= 16384:
+            logger.error(
+                f"User data size ({user_data_size} bytes) exceeds 16KB limit. "
+                "This should not happen with presigned URL approach."
+            )
+            return None
+
+        # Step 9: Launch instance
         instance_id = self.ec2_manager.launch_instance(
             ami_id=ami_id,
             instance_type=self.config.instance_type,
