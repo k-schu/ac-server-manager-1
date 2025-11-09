@@ -178,6 +178,21 @@ def test_create_user_data_script(ec2_manager: EC2Manager) -> None:
     assert "ERROR_MESSAGES" in script
     assert "add_error" in script
 
+    # Content.json fixup script
+    assert "Fixing Windows paths in content.json files" in script
+    assert "python3 << 'PYTHON_FIXUP_SCRIPT'" in script
+    assert "is_windows_absolute_path" in script
+    assert "fix_windows_path" in script
+    assert "fix_content_json_file" in script
+    assert "PYTHON_FIXUP_SCRIPT" in script
+    # Verify the fixup runs after extraction but before server start
+    extraction_idx = script.find("tar -xzf server-pack.tar.gz")
+    fixup_idx = script.find("Fixing Windows paths in content.json")
+    service_start_idx = script.find("systemctl start acserver")
+    assert extraction_idx < fixup_idx < service_start_idx, (
+        "Content.json fixup must run after extraction and before service start"
+    )
+
 
 def test_launch_instance_success(ec2_manager: EC2Manager) -> None:
     """Test successful instance launch."""

@@ -311,6 +311,140 @@ else
     exit 1
 fi
 
+# Fix Windows absolute paths in content.json files
+log_message "Fixing Windows paths in content.json files..."
+python3 << 'PYTHON_FIXUP_SCRIPT'
+import json
+import os
+import re
+import sys
+
+def is_windows_absolute_path(s):
+    # Check if string looks like a Windows absolute path
+    if not isinstance(s, str):
+        return False
+    # Match drive letter paths: C:\\ or C:/
+    if re.match(r'^[a-zA-Z]:[/\\\\]', s):
+        return True
+    # Match UNC paths: \\\\server\\share
+    if re.match(r'^\\\\\\\\[^\\\\]+\\\\[^\\\\]+', s):
+        return True
+    return False
+
+def normalize_path(path):
+    # Normalize backslashes to forward slashes
+    return path.replace('\\\\', '/')
+
+def find_content_root_keyword(path_parts):
+    # Find index of content root keyword in path parts
+    keywords = ['content', 'cars', 'tracks', 'skins', 'apps', 'data', 'cfg', 'config']
+    for i, part in enumerate(path_parts):
+        if part.lower() in keywords:
+            return i
+    return -1
+
+def find_file_in_pack(basename, pack_root):
+    # Search for file by basename in the pack directory
+    for root, dirs, files in os.walk(pack_root):
+        for file in files:
+            if file == basename:
+                full_path = os.path.join(root, file)
+                rel_path = os.path.relpath(full_path, pack_root)
+                return './' + rel_path
+        for dir in dirs:
+            if dir == basename:
+                full_path = os.path.join(root, dir)
+                rel_path = os.path.relpath(full_path, pack_root)
+                return './' + rel_path
+    return None
+
+def fix_windows_path(path, pack_root):
+    # Convert Windows absolute path to relative path
+    # Normalize backslashes
+    normalized = normalize_path(path)
+    
+    # Split into parts
+    parts = [p for p in normalized.split('/') if p and p != '.']
+    
+    # Remove drive letter if present
+    if parts and re.match(r'^[a-zA-Z]:$', parts[0]):
+        parts = parts[1:]
+    
+    # Find content root keyword
+    keyword_idx = find_content_root_keyword(parts)
+    
+    if keyword_idx >= 0:
+        # Build relative path from keyword
+        rel_parts = parts[keyword_idx:]
+        return './' + '/'.join(rel_parts)
+    
+    # Try to find by basename
+    if parts:
+        basename = parts[-1]
+        found_path = find_file_in_pack(basename, pack_root)
+        if found_path:
+            return found_path
+    
+    # Fallback: use basename only
+    if parts:
+        return './' + parts[-1]
+    
+    # Ultimate fallback: return original normalized
+    return './' + normalized.lstrip('/')
+
+def fix_value(value, pack_root):
+    # Recursively fix Windows paths in value
+    if isinstance(value, str):
+        if is_windows_absolute_path(value):
+            return fix_windows_path(value, pack_root)
+        return value
+    elif isinstance(value, dict):
+        return {{k: fix_value(v, pack_root) for k, v in value.items()}}
+    elif isinstance(value, list):
+        return [fix_value(item, pack_root) for item in value]
+    else:
+        return value
+
+def fix_content_json_file(filepath, pack_root):
+    # Fix Windows paths in a single content.json file
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        fixed_data = fix_value(data, pack_root)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(fixed_data, f, indent=2, ensure_ascii=False)
+        
+        return True
+    except Exception as e:
+        print(f"Warning: Failed to process {{filepath}}: {{e}}", file=sys.stderr)
+        return False
+
+def main():
+    pack_root = '/opt/acserver'
+    fixed_count = 0
+    
+    # Find all content.json files
+    for root, dirs, files in os.walk(pack_root):
+        for file in files:
+            if file == 'content.json':
+                filepath = os.path.join(root, file)
+                if fix_content_json_file(filepath, pack_root):
+                    fixed_count += 1
+    
+    print(f"Fixed {{fixed_count}} content.json file(s)")
+
+if __name__ == '__main__':
+    main()
+PYTHON_FIXUP_SCRIPT
+
+if [ $? -eq 0 ]; then
+    log_message "✓ Content.json fixup completed"
+else
+    log_message "⚠ Warning: content.json fixup encountered issues (may be expected if no content.json files)"
+fi
+
 # Locate the server executable
 log_message "Locating acServer executable..."
 ACSERVER_PATH=""
