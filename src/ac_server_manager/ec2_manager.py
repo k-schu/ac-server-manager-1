@@ -229,9 +229,7 @@ AC_SERVER_TCP_PORT={AC_SERVER_TCP_PORT}
 AC_SERVER_UDP_PORT={AC_SERVER_UDP_PORT}
 AC_SERVER_HTTP_PORT={AC_SERVER_HTTP_PORT}
 
-# S3 Configuration for content.json patching
-export S3_BUCKET="{s3_bucket}"
-export S3_KEY="{s3_key}"
+# Pack ID for content.json patching
 export PACK_ID="{pack_id}"
 
 # Logging function - logs to both file and cloud-init output
@@ -278,11 +276,7 @@ log_message "===== Starting AC Server Deployment ====="
 log_message "Installing required packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq awscli unzip wget tar jq file iproute2 net-tools lib32gcc-s1 lib32stdc++6 python3-pip 2>&1 | tee -a "$DEPLOY_LOG"
-
-# Install boto3 for S3 operations in content.json patching
-log_message "Installing boto3 for S3 operations..."
-python3 -m pip install --quiet boto3 2>&1 | tee -a "$DEPLOY_LOG" || log_message "⚠ Warning: boto3 installation encountered issues"
+apt-get install -y -qq awscli unzip wget tar jq file iproute2 net-tools lib32gcc-s1 lib32stdc++6 python3 2>&1 | tee -a "$DEPLOY_LOG"
 
 # Create directory for AC server
 log_message "Creating server directory..."
@@ -329,21 +323,15 @@ else
     exit 1
 fi
 
-# Fix Windows absolute paths in content.json files with S3 presigned URLs
-log_message "Patching content.json files with S3 presigned URLs for Content Manager..."
+# PATCH_CONTENT_JSON: Fix Windows absolute paths in content.json files for ac-server-wrapper
+log_message "Patching content.json files to work with ac-server-wrapper..."
 python3 << 'PYTHON_CONTENT_PATCHER'
 import json
 import os
 import re
 import sys
+import shutil
 from pathlib import Path
-
-try:
-    import boto3
-    from botocore.exceptions import ClientError
-except ImportError:
-    print("Error: boto3 not available. Skipping content.json patching.", file=sys.stderr)
-    sys.exit(0)
 
 def is_windows_absolute_path(s):
     # Check if string looks like a Windows absolute path
@@ -372,26 +360,42 @@ def find_file_in_pack(basename, pack_root):
                 return os.path.join(root, dir)
     return None
 
-def upload_file_to_s3_and_get_url(local_path, s3_bucket, s3_key, s3_client):
-    # Upload file to S3 and return presigned URL
+def copy_file_to_cm_content(source_path, cm_content_dir, basename, copied_cache):
+    # Copy file to cm_content directory and return relative path
     try:
-        # Upload file to S3
-        s3_client.upload_file(local_path, s3_bucket, s3_key)
+        # Ensure cm_content directory exists
+        os.makedirs(cm_content_dir, exist_ok=True)
         
-        # Generate presigned URL (1 hour expiry)
-        presigned_url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={{'Bucket': s3_bucket, 'Key': s3_key}},
-            ExpiresIn=3600
-        )
+        # Check if already copied
+        if basename in copied_cache:
+            return copied_cache[basename]
         
-        return presigned_url
+        # Destination path in cm_content
+        dest_path = os.path.join(cm_content_dir, basename)
+        
+        # Copy file if source is a file
+        if os.path.isfile(source_path):
+            shutil.copy2(source_path, dest_path)
+            print(f"Copied {{basename}} to cm_content/")
+            copied_cache[basename] = basename
+            return basename
+        elif os.path.isdir(source_path):
+            # For directories, copy the entire directory
+            if os.path.exists(dest_path):
+                shutil.rmtree(dest_path)
+            shutil.copytree(source_path, dest_path)
+            print(f"Copied directory {{basename}} to cm_content/")
+            copied_cache[basename] = basename
+            return basename
+        else:
+            print(f"Warning: Source path {{source_path}} is neither file nor directory", file=sys.stderr)
+            return None
     except Exception as e:
-        print(f"Warning: Failed to upload {{local_path}} to S3: {{e}}", file=sys.stderr)
+        print(f"Warning: Failed to copy {{basename}}: {{e}}", file=sys.stderr)
         return None
 
-def fix_windows_path_with_s3(path, pack_root, s3_bucket, pack_id, s3_client, uploaded_cache):
-    # Convert Windows absolute path to S3 presigned URL
+def fix_windows_path_local(path, pack_root, cm_content_dir, copied_cache):
+    # Convert Windows absolute path to relative basename by copying to cm_content
     # Normalize backslashes
     normalized = normalize_path(path)
     
@@ -407,9 +411,9 @@ def fix_windows_path_with_s3(path, pack_root, s3_bucket, pack_id, s3_client, upl
     
     basename = parts[-1]
     
-    # Check if already uploaded
-    if basename in uploaded_cache:
-        return uploaded_cache[basename]
+    # Check if already copied
+    if basename in copied_cache:
+        return copied_cache[basename]
     
     # Find the actual file in the pack
     local_file_path = find_file_in_pack(basename, pack_root)
@@ -418,45 +422,44 @@ def fix_windows_path_with_s3(path, pack_root, s3_bucket, pack_id, s3_client, upl
         print(f"Warning: File not found for basename '{{basename}}' from path '{{path}}'", file=sys.stderr)
         return path  # Return original if not found
     
-    # Check if it's a directory - skip for now
-    if os.path.isdir(local_file_path):
-        print(f"Warning: Path '{{local_file_path}}' is a directory, skipping S3 upload", file=sys.stderr)
-        return path
+    # Copy to cm_content and get relative path
+    relative_path = copy_file_to_cm_content(local_file_path, cm_content_dir, basename, copied_cache)
     
-    # Generate S3 key for this file
-    s3_key = f"packs/{{pack_id}}/files/{{basename}}"
-    
-    # Upload and get presigned URL
-    presigned_url = upload_file_to_s3_and_get_url(local_file_path, s3_bucket, s3_key, s3_client)
-    
-    if presigned_url:
-        uploaded_cache[basename] = presigned_url
-        print(f"Uploaded {{basename}} -> {{s3_key}}")
-        return presigned_url
+    if relative_path:
+        return relative_path
     else:
-        return path  # Return original if upload failed
+        return path  # Return original if copy failed
 
-def fix_value(value, pack_root, s3_bucket, pack_id, s3_client, uploaded_cache):
-    # Recursively fix Windows paths in value
+def fix_value(value, pack_root, cm_content_dir, copied_cache, key=None):
+    # Recursively fix Windows paths in value. Only process 'file' fields, not 'url' fields.
     if isinstance(value, str):
-        if is_windows_absolute_path(value):
-            return fix_windows_path_with_s3(value, pack_root, s3_bucket, pack_id, s3_client, uploaded_cache)
+        # Only process if this is a 'file' field (not 'url')
+        if key == 'file' and is_windows_absolute_path(value):
+            return fix_windows_path_local(value, pack_root, cm_content_dir, copied_cache)
         return value
     elif isinstance(value, dict):
-        return {{k: fix_value(v, pack_root, s3_bucket, pack_id, s3_client, uploaded_cache) for k, v in value.items()}}
+        return {{k: fix_value(v, pack_root, cm_content_dir, copied_cache, k) for k, v in value.items()}}
     elif isinstance(value, list):
-        return [fix_value(item, pack_root, s3_bucket, pack_id, s3_client, uploaded_cache) for item in value]
+        return [fix_value(item, pack_root, cm_content_dir, copied_cache, None) for item in value]
     else:
         return value
 
-def patch_content_json_file(filepath, pack_root, s3_bucket, pack_id, s3_client, uploaded_cache):
-    # Patch Windows paths in a single content.json file with S3 URLs
+def patch_content_json_file(filepath, pack_root, cm_content_dir, copied_cache):
+    # Patch Windows paths in a single content.json file with local cm_content paths
     try:
+        # Create backup
+        backup_path = filepath + '.bak'
+        shutil.copy2(filepath, backup_path)
+        print(f"Created backup: {{backup_path}}")
+        
+        # Read and parse
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        patched_data = fix_value(data, pack_root, s3_bucket, pack_id, s3_client, uploaded_cache)
+        # Fix Windows paths
+        patched_data = fix_value(data, pack_root, cm_content_dir, copied_cache)
         
+        # Write patched data
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(patched_data, f, indent=2, ensure_ascii=False)
         
@@ -465,26 +468,43 @@ def patch_content_json_file(filepath, pack_root, s3_bucket, pack_id, s3_client, 
         print(f"Warning: Failed to process {{filepath}}: {{e}}", file=sys.stderr)
         return False
 
+def adjust_wrapper_port():
+    # Adjust cm_wrapper_params.json port from 80 to 8050 if running as non-root
+    try:
+        wrapper_params_path = '/opt/acserver/preset/cm_wrapper_params.json'
+        if not os.path.exists(wrapper_params_path):
+            return
+        
+        with open(wrapper_params_path, 'r', encoding='utf-8') as f:
+            params = json.load(f)
+        
+        # Check if port is 80 and we're not root
+        if params.get('port') == 80 and os.geteuid() != 0:
+            params['port'] = 8050
+            with open(wrapper_params_path, 'w', encoding='utf-8') as f:
+                json.dump(params, f, indent=2, ensure_ascii=False)
+            print(f"Adjusted wrapper port from 80 to 8050 (non-root user)")
+    except Exception as e:
+        print(f"Warning: Failed to adjust wrapper port: {{e}}", file=sys.stderr)
+
 def main():
     # Get configuration from environment
-    s3_bucket = os.environ.get('S3_BUCKET')
     pack_id = os.environ.get('PACK_ID')
     
-    if not s3_bucket or not pack_id:
-        print("Error: S3_BUCKET and PACK_ID environment variables must be set", file=sys.stderr)
+    if not pack_id:
+        print("Error: PACK_ID environment variable must be set", file=sys.stderr)
         sys.exit(1)
     
     pack_root = '/opt/acserver'
+    preset_dir = '/opt/acserver/preset'
+    cm_content_dir = os.path.join(preset_dir, 'cm_content')
     
-    # Initialize S3 client
-    try:
-        s3_client = boto3.client('s3')
-    except Exception as e:
-        print(f"Error: Failed to initialize S3 client: {{e}}", file=sys.stderr)
-        sys.exit(1)
+    # Ensure preset and cm_content directories exist
+    os.makedirs(cm_content_dir, exist_ok=True)
+    print(f"Using cm_content directory: {{cm_content_dir}}")
     
-    # Cache for uploaded files (basename -> presigned URL)
-    uploaded_cache = {{}}
+    # Cache for copied files (basename -> relative path)
+    copied_cache = {{}}
     
     patched_count = 0
     
@@ -494,10 +514,13 @@ def main():
             if file == 'content.json':
                 filepath = os.path.join(root, file)
                 print(f"Processing {{filepath}}...")
-                if patch_content_json_file(filepath, pack_root, s3_bucket, pack_id, s3_client, uploaded_cache):
+                if patch_content_json_file(filepath, pack_root, cm_content_dir, copied_cache):
                     patched_count += 1
     
-    print(f"Patched {{patched_count}} content.json file(s) with {{len(uploaded_cache)}} files uploaded to S3")
+    print(f"Patched {{patched_count}} content.json file(s) with {{len(copied_cache)}} files copied to cm_content")
+    
+    # Adjust wrapper port if necessary
+    adjust_wrapper_port()
 
 if __name__ == '__main__':
     main()

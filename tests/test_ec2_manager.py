@@ -178,16 +178,20 @@ def test_create_user_data_script(ec2_manager: EC2Manager) -> None:
     assert "ERROR_MESSAGES" in script
     assert "add_error" in script
 
-    # Content.json patching script with S3 presigned URLs
-    assert "Patching content.json files with S3 presigned URLs" in script
+    # Content.json patching script with local cm_content copying (PATCH_CONTENT_JSON marker)
+    assert "PATCH_CONTENT_JSON" in script
+    assert "Patching content.json files to work with ac-server-wrapper" in script
     assert "python3 << 'PYTHON_CONTENT_PATCHER'" in script
     assert "is_windows_absolute_path" in script
-    assert "fix_windows_path_with_s3" in script or "upload_file_to_s3" in script
+    assert "fix_windows_path_local" in script or "copy_file_to_cm_content" in script
+    assert "shutil.copy2" in script
     assert "patch_content_json_file" in script
     assert "PYTHON_CONTENT_PATCHER" in script
+    assert "cm_content" in script
+    assert ".bak" in script  # Backup files
     # Verify the patching runs after extraction but before server start
     extraction_idx = script.find("tar -xzf server-pack.tar.gz")
-    patching_idx = script.find("Patching content.json files with S3 presigned URLs")
+    patching_idx = script.find("Patching content.json files to work with ac-server-wrapper")
     service_start_idx = script.find("systemctl start acserver")
     assert (
         extraction_idx < patching_idx < service_start_idx
@@ -557,61 +561,67 @@ def test_create_minimal_user_data_size_is_under_16kb(ec2_manager: EC2Manager) ->
     assert size < 2000, f"Minimal user data should be well under 16KB, got {size} bytes"
 
 
-def test_create_user_data_script_s3_presigned_url_patching(ec2_manager: EC2Manager) -> None:
-    """Test that user data script includes S3 presigned URL patching for content.json."""
+def test_create_user_data_script_local_content_json_patching(ec2_manager: EC2Manager) -> None:
+    """Test that user data script includes local cm_content patching for content.json."""
     s3_bucket = "test-bucket"
     s3_key = "packs/my-server-pack-v1.2.tar.gz"
 
     script = ec2_manager.create_user_data_script(s3_bucket, s3_key)
 
-    # Verify S3 configuration environment variables are set
-    assert f'export S3_BUCKET="{s3_bucket}"' in script
-    assert f'export S3_KEY="{s3_key}"' in script
-
-    # Verify PACK_ID is derived and set
+    # Verify PACK_ID is derived and set (S3_BUCKET no longer needed)
     assert "export PACK_ID=" in script
     # PACK_ID should be sanitized version of filename
     assert "my-server-pack-v1_2" in script or "my_server_pack_v1_2" in script
 
-    # Verify boto3 installation
-    assert "python3-pip" in script
-    assert "pip install" in script
-    assert "boto3" in script
+    # Verify python3 is installed (but not pip/boto3)
+    assert "python3" in script
+    assert "python3-pip" not in script
+    assert "boto3" not in script
 
-    # Verify Python content patcher script is embedded
+    # Verify Python content patcher script is embedded with PATCH_CONTENT_JSON marker
+    assert "PATCH_CONTENT_JSON" in script
     assert "PYTHON_CONTENT_PATCHER" in script
-    assert "Patching content.json files with S3 presigned URLs" in script
+    assert "Patching content.json files to work with ac-server-wrapper" in script
 
-    # Verify boto3 imports in Python script
-    assert "import boto3" in script
-    assert "from botocore.exceptions import ClientError" in script
+    # Verify shutil import and usage for local file copying
+    assert "import shutil" in script
+    assert "shutil.copy2" in script
 
-    # Verify S3 operations in Python script
-    assert "boto3.client('s3')" in script
-    assert "upload_file" in script
-    assert "generate_presigned_url" in script
+    # Verify local file operations (no S3 upload)
+    assert "copy_file_to_cm_content" in script
+    assert "fix_windows_path_local" in script
+    assert "cm_content" in script
+    assert "preset" in script  # Check for preset directory
 
-    # Verify presigned URL configuration (1 hour = 3600 seconds)
-    assert "ExpiresIn=3600" in script
+    # Verify backup creation
+    assert ".bak" in script
 
     # Verify Windows path detection
     assert "is_windows_absolute_path" in script
-    assert "[a-zA-Z]:[/\\\\]" in script  # Drive letter pattern (matches the regex in the script)
-
-    # Verify S3 key structure for uploaded files
-    assert "packs/{pack_id}/files/{basename}" in script or "packs/" in script
+    assert "[a-zA-Z]:[/\\\\]" in script  # Drive letter pattern
 
     # Verify content.json file processing
     assert "content.json" in script
-    assert "patch_content_json_file" in script or "fix_content_json_file" in script
+    assert "patch_content_json_file" in script
 
-    # Verify environment variable usage in Python script
-    assert "os.environ.get('S3_BUCKET')" in script
+    # Verify environment variable usage in Python script (only PACK_ID now)
     assert "os.environ.get('PACK_ID')" in script
+
+    # Verify no S3 operations
+    assert "upload_file" not in script
+    assert "generate_presigned_url" not in script
+    assert "boto3.client('s3')" not in script
+
+    # Verify 'file' vs 'url' field handling
+    assert "key == 'file'" in script
+
+    # Verify wrapper port adjustment
+    assert "adjust_wrapper_port" in script
+    assert "cm_wrapper_params.json" in script
 
     # Verify patching happens after extraction but before server start
     extraction_idx = script.find("tar -xzf server-pack.tar.gz")
-    patching_idx = script.find("Patching content.json files with S3 presigned URLs")
+    patching_idx = script.find("Patching content.json files to work with ac-server-wrapper")
     server_start_idx = script.find("systemctl start acserver")
 
     assert extraction_idx > 0, "Extraction command not found"
