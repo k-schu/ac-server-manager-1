@@ -20,7 +20,7 @@ git clone https://github.com/k-schu/ac-server-manager.git
 cd ac-server-manager
 
 # Install with pip
-pip install -e .
+uv pip install -e .
 ```
 
 ### AWS Credentials
@@ -40,7 +40,7 @@ aws configure
 
 **Deploy a server:**
 ```bash
-ac-server-manager deploy server-pack.tar.gz --create-iam
+uv run ac-server-manager deploy server-pack.tar.gz --create-iam
 ```
 
 **Check server status:**
