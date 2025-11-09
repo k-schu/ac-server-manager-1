@@ -89,13 +89,37 @@ class Deployer:
             logger.error("Failed to get Ubuntu AMI")
             return None
 
-        # Step 6: Create full bootstrap script
-        bootstrap_script = self.ec2_manager.create_user_data_script(
-            self.config.s3_bucket_name,
-            s3_key,
-            enable_wrapper=self.config.enable_wrapper,
-            wrapper_port=self.config.wrapper_port,
-        )
+        # Step 6: Create bootstrap script (AssettoServer or traditional)
+        if self.config.use_assettoserver:
+            logger.info("Using AssettoServer deployment approach")
+
+            # Upload preparation tool to S3 first
+            prep_tool_path = (
+                Path(__file__).parent.parent.parent / "tools" / "assetto_server_prepare.py"
+            )
+            if prep_tool_path.exists():
+                prep_tool_key = "tools/assetto_server_prepare.py"
+                with open(prep_tool_path, "rb") as f:
+                    self.s3_manager.upload_bytes(prep_tool_key, f.read())
+                logger.info(
+                    f"Uploaded preparation tool to s3://{self.config.s3_bucket_name}/{prep_tool_key}"
+                )
+            else:
+                logger.warning(f"Preparation tool not found at {prep_tool_path}")
+
+            bootstrap_script = self.ec2_manager.create_assettoserver_user_data_script(
+                self.config.s3_bucket_name,
+                s3_key,
+                assettoserver_version=self.config.assettoserver_version,
+            )
+        else:
+            logger.info("Using traditional AC server deployment approach")
+            bootstrap_script = self.ec2_manager.create_user_data_script(
+                self.config.s3_bucket_name,
+                s3_key,
+                enable_wrapper=self.config.enable_wrapper,
+                wrapper_port=self.config.wrapper_port,
+            )
 
         # Step 7: Upload bootstrap script to S3 and get presigned URL
         upload_result = self.ec2_manager.upload_bootstrap_to_s3(self.s3_manager, bootstrap_script)

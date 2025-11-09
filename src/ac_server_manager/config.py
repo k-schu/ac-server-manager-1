@@ -32,6 +32,10 @@ class ServerConfig:
     enable_wrapper: bool = True  # Enable ac-server-wrapper for CM content downloads
     wrapper_port: int = 8082  # Port for wrapper (must be different from AC HTTP port 8081)
 
+    # AssettoServer Configuration
+    use_assettoserver: bool = False  # Use AssettoServer instead of default AC server
+    assettoserver_version: str = "v0.0.54"  # AssettoServer Docker image version
+
     # Instance tags
     instance_name: str = "ac-server-instance"
 

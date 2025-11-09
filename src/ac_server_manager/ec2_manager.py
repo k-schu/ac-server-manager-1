@@ -1131,3 +1131,139 @@ exec "$BOOTSTRAP_PATH"
         except ClientError as e:
             logger.error(f"Error getting instance details: {e}")
             return None
+
+    def create_assettoserver_user_data_script(
+        self, s3_bucket: str, s3_key: str, assettoserver_version: str = "v0.0.54"
+    ) -> str:
+        """Create user data script for AssettoServer Docker deployment.
+
+        Args:
+            s3_bucket: S3 bucket containing the pack file
+            s3_key: S3 key of the pack file
+            assettoserver_version: AssettoServer Docker image version
+
+        Returns:
+            User data script as string
+        """
+        import re
+
+        pack_id = re.sub(
+            r"[^a-zA-Z0-9-_]", "_", s3_key.split("/")[-1].replace(".tar.gz", "").replace(".zip", "")
+        )
+
+        script = f"""#!/bin/bash
+set -e
+
+# Logging setup
+DEPLOY_LOG="/var/log/assettoserver-deploy.log"
+exec > >(tee -a "$DEPLOY_LOG") 2>&1
+
+log_message() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}}
+
+log_message "=== AssettoServer Deployment Started ==="
+log_message "Pack: {s3_key}"
+log_message "AssettoServer Version: {assettoserver_version}"
+
+# Install Docker
+log_message "Installing Docker..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq ca-certificates curl gnupg awscli
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+apt-get update -qq
+apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+log_message "✓ Docker installed"
+
+# Create AssettoServer data directory
+ASSETTOSERVER_DIR="/opt/assettoserver"
+DATA_DIR="$ASSETTOSERVER_DIR/data"
+mkdir -p "$DATA_DIR"
+cd "$ASSETTOSERVER_DIR"
+
+log_message "Downloading server pack from S3..."
+aws s3 cp s3://{s3_bucket}/{s3_key} ./server-pack.tar.gz
+
+# Install Python if needed
+if ! command -v python3 &>/dev/null; then
+    log_message "Installing Python..."
+    apt-get install -y -qq python3
+fi
+
+# Download the preparation tool
+log_message "Downloading AssettoServer preparation tool..."
+aws s3 cp s3://{s3_bucket}/tools/assetto_server_prepare.py ./assetto_server_prepare.py
+chmod +x ./assetto_server_prepare.py
+
+# Prepare AssettoServer data
+log_message "Preparing AssettoServer data structure..."
+python3 ./assetto_server_prepare.py ./server-pack.tar.gz "$DATA_DIR"
+
+if [ $? -ne 0 ]; then
+    log_message "ERROR: Failed to prepare AssettoServer data"
+    exit 1
+fi
+
+log_message "✓ Server data prepared"
+
+# Create docker-compose.yml
+log_message "Creating Docker Compose configuration..."
+cat > docker-compose.yml << 'EOF'
+version: "3.9"
+
+services:
+  assetto-server:
+    image: compujuckel/assettoserver:{assettoserver_version}
+    container_name: AssettoServer
+    ports:
+      - "9600:9600"
+      - "9600:9600/udp"
+      - "8081:8081"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=UTC
+    restart: always
+EOF
+
+log_message "✓ Docker Compose configuration created"
+
+# Pull AssettoServer image
+log_message "Pulling AssettoServer Docker image..."
+docker compose pull
+
+# Start AssettoServer
+log_message "Starting AssettoServer..."
+docker compose up -d
+
+if [ $? -eq 0 ]; then
+    log_message "✓ AssettoServer started successfully"
+    log_message "=== Deployment Complete ==="
+    
+    # Write deployment status
+    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
+    cat > /opt/assettoserver/deploy-status.json << STATUSEOF
+{{
+  "status": "success",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "server_ip": "$PUBLIC_IP",
+  "server_port": 9600,
+  "http_port": 8081,
+  "assettoserver_version": "{assettoserver_version}",
+  "pack_id": "{pack_id}"
+}}
+STATUSEOF
+    
+    log_message "Server available at $PUBLIC_IP:9600"
+    log_message "HTTP interface at http://$PUBLIC_IP:8081"
+else
+    log_message "ERROR: Failed to start AssettoServer"
+    exit 1
+fi
+"""
+        return script

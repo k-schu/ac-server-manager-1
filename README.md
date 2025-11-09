@@ -9,6 +9,22 @@ Purely vibecoded automated deployment tool for Assetto Corsa dedicated servers o
 - 💰 **Cost-optimized** with t3.small instances (~$15/month)
 - 🔄 **Complete lifecycle** management (deploy, start, stop, terminate)
 - 🧹 **Safe teardown** with `terminate-all` command
+- 🐳 **AssettoServer support** - Deploy using AssettoServer Docker container
+
+## Deployment Options
+
+This tool supports two deployment approaches:
+
+1. **Traditional Assetto Corsa Server** (default) - Uses the standard AC dedicated server with optional ac-server-wrapper
+2. **AssettoServer** - Uses the modern [AssettoServer](https://assettoserver.org/) Docker-based solution with enhanced features
+
+### AssettoServer Benefits
+
+- Built-in CSP (Custom Shaders Patch) support
+- Enhanced security and stability
+- Active development and community support
+- Plugin system for extensibility
+- Better freeroam experience
 
 ## Quick Start
 
@@ -38,9 +54,14 @@ aws configure
 
 ### Basic Usage
 
-**Deploy a server:**
+**Deploy a traditional AC server:**
 ```bash
 uv run ac-server-manager deploy server-pack.tar.gz --create-iam
+```
+
+**Deploy with AssettoServer:**
+```bash
+uv run ac-server-manager deploy server-pack.tar.gz --create-iam --use-assettoserver
 ```
 
 **Check server status:**
@@ -122,6 +143,16 @@ ac-server-manager terminate-all --skip-bucket
 - `--create-iam` - Auto-create IAM role for S3 access
 - `--key-name TEXT` - SSH key pair name
 
+### AssettoServer Options
+
+- `--use-assettoserver` - Deploy using AssettoServer instead of traditional AC server
+- `--assettoserver-version TEXT` - AssettoServer Docker image version (default: v0.0.54)
+
+**Example:**
+```bash
+ac-server-manager deploy server-pack.tar.gz --use-assettoserver --assettoserver-version v0.0.54
+```
+
 ## Documentation
 
 For detailed documentation, troubleshooting, and advanced usage, see:
@@ -183,4 +214,12 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - **Full Docs**: [docs/README_FULL.md](docs/README_FULL.md)
 
 ## References
-This project heavily references Content Manager (https://assettocorsa.club/content-manager.html) server deployments. Future versions may implement https://assettoserver.org/ instead. Please feel free to fork, contribute, and raise feature requets, this will help me learn!
+
+This project supports both traditional Content Manager server deployments and modern AssettoServer deployments:
+
+- **Content Manager**: https://assettocorsa.club/content-manager.html
+- **AssettoServer**: https://assettoserver.org/
+- **AssettoServer GitHub**: https://github.com/compujuckel/AssettoServer
+- **AssettoServer Docker**: https://hub.docker.com/r/compujuckel/assettoserver
+
+Please feel free to fork, contribute, and raise feature requests - this will help me learn!
