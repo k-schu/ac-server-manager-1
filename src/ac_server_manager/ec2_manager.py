@@ -187,6 +187,17 @@ mkdir -p "$D" "$D/cm_content"
 cd "$W"
 [ -f "package.json" ] && {{ export NODE_ENV=production; timeout 300 npm ci --production >> "$L" 2>&1 || timeout 300 npm install --production >> "$L" 2>&1 || {{ log "npm failed"; exit 1; }}; }}
 chown -R root:root "$W" 2>/dev/null; chmod +x "$W"/*.js 2>/dev/null || true
+log "Creating cm_wrapper_params.json with port $P"
+cat > "$D/cm_wrapper_params.json" << WPARAMS
+{{
+  "port": $P,
+  "verboseLog": true,
+  "downloadSpeedLimit": 1e6,
+  "downloadPasswordOnly": false,
+  "publishPasswordChecksum": true
+}}
+WPARAMS
+log "✓ Created cm_wrapper_params.json"
 cat > /etc/systemd/system/acserver-wrapper.service << SVC
 [Unit]
 Description=AC Server Wrapper
@@ -196,7 +207,7 @@ Wants=acserver.service
 Type=simple
 User=root
 WorkingDirectory=/opt/acserver/wrapper
-ExecStart=/usr/bin/node /opt/acserver/wrapper/ac-server-wrapper.js --preset /opt/acserver/preset --port $P
+ExecStart=/usr/bin/node /opt/acserver/wrapper/ac-server-wrapper.js /opt/acserver/preset
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/var/log/acserver-wrapper-stdout.log

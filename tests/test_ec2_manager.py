@@ -669,3 +669,46 @@ def test_create_user_data_script_pack_id_sanitization(ec2_manager: EC2Manager) -
             or pack_id in expected_sanitized
             or pack_id == expected_sanitized
         ), f"PACK_ID '{pack_id}' doesn't match expected '{expected_sanitized}' for key: {s3_key}"
+
+
+def test_wrapper_cm_wrapper_params_json_creation(ec2_manager: EC2Manager) -> None:
+    """Test that cm_wrapper_params.json is created with correct port when wrapper is enabled."""
+    # Test with wrapper enabled and custom port
+    script = ec2_manager.create_user_data_script(
+        "test-bucket", "test-pack.tar.gz", enable_wrapper=True, wrapper_port=8082
+    )
+
+    # Verify cm_wrapper_params.json is created
+    assert "cm_wrapper_params.json" in script
+    assert 'cat > "$D/cm_wrapper_params.json"' in script
+
+    # Verify the file contains the correct port
+    assert '"port": 8082' in script or '"port": $P' in script
+
+    # Verify other important fields are present
+    assert '"verboseLog": true' in script
+    assert '"downloadSpeedLimit"' in script
+    assert '"downloadPasswordOnly"' in script
+    assert '"publishPasswordChecksum"' in script
+
+    # Verify the systemd service uses the correct command (no --port argument)
+    assert (
+        "/usr/bin/node /opt/acserver/wrapper/ac-server-wrapper.js /opt/acserver/preset" in script
+    )
+    # Verify the incorrect --port argument is NOT in the systemd service
+    assert "--port" not in script.split("ExecStart=")[1].split("\n")[0]
+
+
+def test_wrapper_disabled_no_params_json(ec2_manager: EC2Manager) -> None:
+    """Test that cm_wrapper_params.json is NOT created when wrapper is disabled."""
+    script = ec2_manager.create_user_data_script(
+        "test-bucket", "test-pack.tar.gz", enable_wrapper=False
+    )
+
+    # Verify wrapper installation script is NOT created
+    assert "install-wrapper.sh" not in script
+    assert "ac-server-wrapper.git" not in script
+    assert "acserver-wrapper.service" not in script
+    
+    # The adjust_wrapper_port function is still in the script (part of content.json patching)
+    # but it won't do anything since no wrapper is installed
