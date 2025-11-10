@@ -162,28 +162,32 @@ The server will be deployed and available at the public IP address shown in the 
 
 ### AC Server Wrapper for Content Manager
 
-You can optionally enable the ac-server-wrapper, which allows Content Manager to download missing content (cars, tracks) directly from the server. This is useful for servers with custom content.
+The ac-server-wrapper is **enabled by default** and allows Content Manager to download missing content (cars, tracks, skins) directly from the server. This is essential for servers with custom content.
 
 ```bash
-ac-server-manager deploy server-pack.tar.gz --enable-wrapper
-```
+# Deploy with wrapper enabled (default)
+ac-server-manager deploy server-pack.tar.gz
 
-With a custom port:
+# With custom port
+ac-server-manager deploy server-pack.tar.gz --wrapper-port 9000
 
-```bash
-ac-server-manager deploy server-pack.tar.gz \
-  --enable-wrapper \
-  --wrapper-port 9000
+# Disable wrapper if not needed
+ac-server-manager deploy server-pack.tar.gz --no-enable-wrapper
 ```
 
 **What the wrapper does:**
 - Installs Node.js 20 on the server
 - Sets up ac-server-wrapper as a systemd service
+- Creates `cm_wrapper_params.json` with correct port configuration
 - Opens the wrapper port in the security group (default: 8082)
+- Automatically patches content.json files from Windows paths
+- Copies content files to `cm_content/` directory for serving
 - Enables automatic content downloads in Content Manager
 - Runs in the background without blocking server startup
 
 **Note:** The wrapper installation happens asynchronously after the server starts. Check `/var/log/acserver-wrapper-install.log` for installation progress.
+
+**For detailed information about content downloads, see [Content Downloads Documentation](CONTENT_DOWNLOADS.md).**
 
 ### Managing Your Server
 

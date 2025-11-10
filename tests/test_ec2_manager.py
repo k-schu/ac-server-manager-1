@@ -692,9 +692,7 @@ def test_wrapper_cm_wrapper_params_json_creation(ec2_manager: EC2Manager) -> Non
     assert '"publishPasswordChecksum"' in script
 
     # Verify the systemd service uses the correct command (no --port argument)
-    assert (
-        "/usr/bin/node /opt/acserver/wrapper/ac-server-wrapper.js /opt/acserver/preset" in script
-    )
+    assert "/usr/bin/node /opt/acserver/wrapper/ac-server-wrapper.js /opt/acserver/preset" in script
     # Verify the incorrect --port argument is NOT in the systemd service
     assert "--port" not in script.split("ExecStart=")[1].split("\n")[0]
 
@@ -709,6 +707,6 @@ def test_wrapper_disabled_no_params_json(ec2_manager: EC2Manager) -> None:
     assert "install-wrapper.sh" not in script
     assert "ac-server-wrapper.git" not in script
     assert "acserver-wrapper.service" not in script
-    
+
     # The adjust_wrapper_port function is still in the script (part of content.json patching)
     # but it won't do anything since no wrapper is installed
