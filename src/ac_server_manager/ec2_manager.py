@@ -1152,25 +1152,47 @@ exec "$BOOTSTRAP_PATH"
         )
 
         script = f"""#!/bin/bash
-set -e
+set -euo pipefail
 
 # Logging setup
 DEPLOY_LOG="/var/log/assettoserver-deploy.log"
+STATUS_FILE="/opt/assettoserver/deploy-status.json"
 exec > >(tee -a "$DEPLOY_LOG") 2>&1
 
 log_message() {{
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }}
 
+write_status() {{
+    local status=$1
+    local detail=${{2:-""}}
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local public_ip=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
+    
+    cat > "$STATUS_FILE" << STATUSEOF
+{{
+  "status": "$status",
+  "detail": "$detail",
+  "timestamp": "$timestamp",
+  "server_ip": "$public_ip",
+  "server_port": {AC_SERVER_UDP_PORT},
+  "tcp_port": {AC_SERVER_TCP_PORT},
+  "http_port": {AC_SERVER_HTTP_PORT},
+  "assettoserver_version": "{assettoserver_version}",
+  "pack_id": "{pack_id}"
+}}
+STATUSEOF
+}}
+
 log_message "=== AssettoServer Deployment Started ==="
 log_message "Pack: {s3_key}"
 log_message "AssettoServer Version: {assettoserver_version}"
 
-# Install Docker
-log_message "Installing Docker..."
+# Install Docker and dependencies
+log_message "Installing Docker and dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq ca-certificates curl gnupg awscli
+apt-get install -y -qq ca-certificates curl gnupg awscli python3 ufw
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 chmod a+r /etc/apt/keyrings/docker.gpg
@@ -1178,7 +1200,7 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 apt-get update -qq
 apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
-log_message "✓ Docker installed"
+log_message "✓ Docker and dependencies installed"
 
 # Create AssettoServer data directory
 ASSETTOSERVER_DIR="/opt/assettoserver"
@@ -1186,83 +1208,126 @@ DATA_DIR="$ASSETTOSERVER_DIR/data"
 mkdir -p "$DATA_DIR"
 cd "$ASSETTOSERVER_DIR"
 
+# Download server pack from S3 with retries
 log_message "Downloading server pack from S3..."
-aws s3 cp s3://{s3_bucket}/{s3_key} ./server-pack.tar.gz
-
-# Install Python if needed
-if ! command -v python3 &>/dev/null; then
-    log_message "Installing Python..."
-    apt-get install -y -qq python3
-fi
+MAX_RETRIES=3
+RETRY_DELAY=5
+for attempt in $(seq 1 $MAX_RETRIES); do
+    if aws s3 cp s3://{s3_bucket}/{s3_key} ./server-pack.tar.gz; then
+        log_message "✓ Download successful"
+        break
+    else
+        if [ $attempt -eq $MAX_RETRIES ]; then
+            log_message "ERROR: Failed to download pack from S3 after $MAX_RETRIES attempts"
+            write_status "failed" "Failed to download pack from S3"
+            exit 1
+        fi
+        log_message "Download attempt $attempt failed, retrying in $RETRY_DELAY seconds..."
+        sleep $RETRY_DELAY
+        RETRY_DELAY=$((RETRY_DELAY * 2))
+    fi
+done
 
 # Download the preparation tool
 log_message "Downloading AssettoServer preparation tool..."
-aws s3 cp s3://{s3_bucket}/tools/assetto_server_prepare.py ./assetto_server_prepare.py
+if ! aws s3 cp s3://{s3_bucket}/tools/assetto_server_prepare.py ./assetto_server_prepare.py; then
+    log_message "ERROR: Failed to download preparation tool"
+    write_status "failed" "Failed to download preparation tool"
+    exit 1
+fi
 chmod +x ./assetto_server_prepare.py
 
 # Prepare AssettoServer data
 log_message "Preparing AssettoServer data structure..."
-python3 ./assetto_server_prepare.py ./server-pack.tar.gz "$DATA_DIR"
-
-if [ $? -ne 0 ]; then
+if ! python3 ./assetto_server_prepare.py ./server-pack.tar.gz "$DATA_DIR"; then
     log_message "ERROR: Failed to prepare AssettoServer data"
+    write_status "failed" "Failed to prepare AssettoServer data structure"
     exit 1
 fi
 
 log_message "✓ Server data prepared"
 
-# Create docker-compose.yml
+# Create docker-compose.yml with explicit UDP port mapping
 log_message "Creating Docker Compose configuration..."
 cat > docker-compose.yml << 'EOF'
 version: "3.9"
 
 services:
-  assetto-server:
+  assettoserver:
     image: compujuckel/assettoserver:{assettoserver_version}
-    container_name: AssettoServer
+    container_name: assettoserver
     ports:
-      - "9600:9600"
-      - "9600:9600/udp"
-      - "8081:8081"
+      - "{AC_SERVER_UDP_PORT}:{AC_SERVER_UDP_PORT}/udp"
+      - "{AC_SERVER_TCP_PORT}:{AC_SERVER_TCP_PORT}/tcp"
+      - "{AC_SERVER_HTTP_PORT}:{AC_SERVER_HTTP_PORT}/tcp"
+      - "8080:8080/tcp"
     volumes:
       - ./data:/data
     environment:
       - TZ=UTC
-    restart: always
+    restart: unless-stopped
+    network_mode: bridge
 EOF
 
 log_message "✓ Docker Compose configuration created"
 
+# Configure host firewall (ufw) if available
+log_message "Configuring host firewall..."
+if command -v ufw &>/dev/null; then
+    # Allow SSH first
+    ufw allow 22/tcp || true
+    # Allow game ports
+    ufw allow {AC_SERVER_UDP_PORT}/udp || true
+    ufw allow {AC_SERVER_TCP_PORT}/tcp || true
+    # Allow HTTP ports
+    ufw allow {AC_SERVER_HTTP_PORT}/tcp || true
+    ufw allow 8080/tcp || true
+    # Enable ufw with defaults (non-interactive)
+    echo "y" | ufw enable || true
+    ufw status | tee -a "$DEPLOY_LOG"
+    log_message "✓ Firewall configured"
+else
+    log_message "⚠ ufw not available, skipping firewall configuration"
+fi
+
 # Pull AssettoServer image
 log_message "Pulling AssettoServer Docker image..."
-docker compose pull
+if ! docker compose pull; then
+    log_message "ERROR: Failed to pull AssettoServer image"
+    write_status "failed" "Failed to pull Docker image"
+    exit 1
+fi
 
 # Start AssettoServer
-log_message "Starting AssettoServer..."
-docker compose up -d
-
-if [ $? -eq 0 ]; then
+log_message "Starting AssettoServer container..."
+if docker compose up -d; then
     log_message "✓ AssettoServer started successfully"
+    
+    # Wait for container to be healthy
+    log_message "Waiting for container to start..."
+    sleep 10
+    
+    # Check if container is running
+    if docker ps | grep -q assettoserver; then
+        log_message "✓ Container is running"
+        write_status "started" "AssettoServer deployment successful"
+    else
+        log_message "ERROR: Container failed to start"
+        log_message "Container logs:"
+        docker logs assettoserver 2>&1 | tail -50 | tee -a "$DEPLOY_LOG"
+        write_status "failed" "Container failed to start"
+        exit 1
+    fi
+    
     log_message "=== Deployment Complete ==="
-    
-    # Write deployment status
     PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
-    cat > /opt/assettoserver/deploy-status.json << STATUSEOF
-{{
-  "status": "success",
-  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "server_ip": "$PUBLIC_IP",
-  "server_port": 9600,
-  "http_port": 8081,
-  "assettoserver_version": "{assettoserver_version}",
-  "pack_id": "{pack_id}"
-}}
-STATUSEOF
-    
-    log_message "Server available at $PUBLIC_IP:9600"
-    log_message "HTTP interface at http://$PUBLIC_IP:8081"
+    log_message "Server available at $PUBLIC_IP:{AC_SERVER_UDP_PORT} (UDP)"
+    log_message "HTTP interface at http://$PUBLIC_IP:{AC_SERVER_HTTP_PORT}"
+    log_message "File server at http://$PUBLIC_IP:8080"
+    log_message "Status file: $STATUS_FILE"
 else
     log_message "ERROR: Failed to start AssettoServer"
+    write_status "failed" "docker compose up failed"
     exit 1
 fi
 """
