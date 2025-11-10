@@ -93,16 +93,12 @@ def test_create_user_data_script(ec2_manager: EC2Manager) -> None:
     # Pack extraction and verification
     assert "tar -xzf server-pack.tar.gz" in script
 
-    # Binary location and verification - now searches for both acServerWrapper and acServer
+    # Binary location and verification
     assert "find /opt/acserver" in script
     assert "acServer" in script or "acserver" in script
-    assert "acServerWrapper" in script  # New wrapper binary search
     assert "file" in script  # file command to check binary type
     assert "ELF" in script
     assert "PE32" in script or "Windows" in script  # Check for Windows binary detection
-
-    # Check that common locations are searched (root, bin, build)
-    assert "bin" in script and "build" in script
 
     # Binary permissions - now uses variable
     assert "chmod +x" in script

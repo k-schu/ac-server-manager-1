@@ -6,7 +6,12 @@ from typing import Optional
 import boto3
 from botocore.exceptions import ClientError
 
-from .config import AC_SERVER_HTTP_PORT, AC_SERVER_TCP_PORT, AC_SERVER_UDP_PORT
+from .config import (
+    AC_SERVER_HTTP_PORT,
+    AC_SERVER_TCP_PORT,
+    AC_SERVER_UDP_PORT,
+    AC_SERVER_WRAPPER_PORT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +85,12 @@ class EC2Manager:
                         "ToPort": AC_SERVER_UDP_PORT,
                         "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "AC UDP"}],
                     },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": AC_SERVER_WRAPPER_PORT,
+                        "ToPort": AC_SERVER_WRAPPER_PORT,
+                        "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "AC Server Wrapper"}],
+                    },
                 ],
             )
             logger.info(f"Added ingress rules to security group {group_id}")
@@ -142,6 +153,7 @@ VALIDATION_TIMEOUT=120
 AC_SERVER_TCP_PORT={AC_SERVER_TCP_PORT}
 AC_SERVER_UDP_PORT={AC_SERVER_UDP_PORT}
 AC_SERVER_HTTP_PORT={AC_SERVER_HTTP_PORT}
+AC_SERVER_WRAPPER_PORT={AC_SERVER_WRAPPER_PORT}
 
 # Logging function - logs to both file and cloud-init output
 log_message() {{
@@ -160,6 +172,7 @@ add_error() {{
 write_status() {{
     local success=$1
     local public_ip=$2
+    local has_wrapper=${{3:-false}}
     local timestamp=$(date -Iseconds)
     
     cat > "$STATUS_FILE" << STATUSEOF
@@ -170,8 +183,10 @@ write_status() {{
   "ports": {{
     "tcp": $AC_SERVER_TCP_PORT,
     "udp": $AC_SERVER_UDP_PORT,
-    "http": $AC_SERVER_HTTP_PORT
+    "http": $AC_SERVER_HTTP_PORT,
+    "wrapper": $AC_SERVER_WRAPPER_PORT
   }},
+  "wrapper_enabled": $has_wrapper,
   "error_messages": [
     $(printf '"%s"' "${{ERROR_MESSAGES[@]}}" | paste -sd, -)
   ]
@@ -235,60 +250,36 @@ else
 fi
 
 # Locate the server executable
-log_message "Locating acServer or acServerWrapper executable..."
+log_message "Locating acServer executable..."
 ACSERVER_PATH=""
-ACSERVER_WRAPPER_PATH=""
 
-# Search for acServerWrapper first (preferred) - check common locations in order
-for location in "." "bin" "build"; do
-    if [ -f "./$location/acServerWrapper" ]; then
-        ACSERVER_WRAPPER_PATH="./$location/acServerWrapper"
-        log_message "Found acServerWrapper at: $ACSERVER_WRAPPER_PATH"
-        break
-    fi
-done
-
-# If acServerWrapper not found, search for acServer in common locations
-if [ -z "$ACSERVER_WRAPPER_PATH" ]; then
-    log_message "acServerWrapper not found, searching for acServer..."
-    for location in "." "bin" "build"; do
-        if [ -f "./$location/acServer" ]; then
-            ACSERVER_PATH="./$location/acServer"
-            log_message "Found acServer at: $ACSERVER_PATH"
-            break
-        fi
-    done
+# Search for acServer binary - check common locations first
+if [ -f "./acServer" ] && [ -x "./acServer" ]; then
+    ACSERVER_PATH="./acServer"
+elif [ -f "./acServer" ]; then
+    ACSERVER_PATH="./acServer"
+else
+    # Search in subdirectories
+    FOUND_BINARIES=$(find /opt/acserver -maxdepth 3 -type f \\( -name "acServer*" -o -name "acserver*" \\) 2>/dev/null || true)
     
-    # If still not found, do a broader search
-    if [ -z "$ACSERVER_PATH" ]; then
-        FOUND_BINARIES=$(find /opt/acserver -maxdepth 3 -type f \\( -name "acServer*" -o -name "acserver*" \\) 2>/dev/null || true)
-        
-        if [ -n "$FOUND_BINARIES" ]; then
-            # Prefer executables
-            for binary in $FOUND_BINARIES; do
-                if [ -x "$binary" ]; then
-                    ACSERVER_PATH="$binary"
-                    break
-                fi
-            done
-            
-            # If no executable found, take first match
-            if [ -z "$ACSERVER_PATH" ]; then
-                ACSERVER_PATH=$(echo "$FOUND_BINARIES" | head -1)
+    if [ -n "$FOUND_BINARIES" ]; then
+        # Prefer executables
+        for binary in $FOUND_BINARIES; do
+            if [ -x "$binary" ]; then
+                ACSERVER_PATH="$binary"
+                break
             fi
+        done
+        
+        # If no executable found, take first match
+        if [ -z "$ACSERVER_PATH" ]; then
+            ACSERVER_PATH=$(echo "$FOUND_BINARIES" | head -1)
         fi
     fi
 fi
 
-# Set the final binary path (prefer wrapper)
-if [ -n "$ACSERVER_WRAPPER_PATH" ]; then
-    ACSERVER_PATH="$ACSERVER_WRAPPER_PATH"
-    log_message "Using acServerWrapper"
-elif [ -n "$ACSERVER_PATH" ]; then
-    log_message "Using acServer (acServerWrapper not found)"
-else
-    add_error "No acServer or acServerWrapper binary found in extracted pack"
-    add_error "Searched locations: ./, ./bin/, ./build/, and subdirectories"
+if [ -z "$ACSERVER_PATH" ]; then
+    add_error "No acServer binary found in extracted pack"
     PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "unknown")
     write_status false "$PUBLIC_IP"
     exit 1
@@ -362,6 +353,60 @@ log_message "Starting AC server service..."
 systemctl daemon-reload
 systemctl enable acserver
 systemctl start acserver
+
+# Detect and configure acServerWrapper if present
+log_message "Checking for acServerWrapper binary..."
+WRAPPER_PATH=""
+for location in "$WORKING_DIR" "$WORKING_DIR/bin" "$WORKING_DIR/build"; do
+    if [ -f "$location/acServerWrapper" ]; then
+        WRAPPER_PATH="$location/acServerWrapper"
+        log_message "Found acServerWrapper at: $WRAPPER_PATH"
+        break
+    fi
+done
+
+if [ -n "$WRAPPER_PATH" ]; then
+    log_message "Setting up acServerWrapper service..."
+    
+    # Make wrapper executable
+    chmod +x "$WRAPPER_PATH"
+    chown root:root "$WRAPPER_PATH"
+    
+    # Check if wrapper needs Node.js (ac-server-wrapper is typically a Node.js binary or script)
+    WRAPPER_TYPE=$(file "$WRAPPER_PATH")
+    log_message "Wrapper type: $WRAPPER_TYPE"
+    
+    # Create systemd service for wrapper
+    cat > /etc/systemd/system/acserver-wrapper.service << EOFWRAPPER
+[Unit]
+Description=AC Server Wrapper (Content Manager file server)
+After=network.target acserver.service
+Requires=acserver.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$WORKING_DIR
+ExecStart=$WRAPPER_PATH
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/acserver-wrapper-stdout.log
+StandardError=append:/var/log/acserver-wrapper-stderr.log
+
+[Install]
+WantedBy=multi-user.target
+EOFWRAPPER
+    
+    log_message "✓ acServerWrapper systemd service created"
+    
+    # Enable and start wrapper service
+    systemctl daemon-reload
+    systemctl enable acserver-wrapper
+    systemctl start acserver-wrapper
+    log_message "✓ acServerWrapper service started"
+else
+    log_message "ℹ acServerWrapper not found - skipping wrapper setup"
+fi
 
 # Wait for server to start
 log_message "Waiting for server to initialize (timeout: ${{VALIDATION_TIMEOUT}}s)..."
@@ -441,6 +486,16 @@ if ! check_port_listening tcp $AC_SERVER_HTTP_PORT "HTTP"; then
     validation_failed=true
 fi
 
+# Check wrapper port if wrapper was configured
+if [ -n "$WRAPPER_PATH" ]; then
+    log_message "Checking acServerWrapper port..."
+    if check_port_listening tcp $AC_SERVER_WRAPPER_PORT "wrapper"; then
+        log_message "✓ acServerWrapper is listening on port $AC_SERVER_WRAPPER_PORT"
+    else
+        log_message "⚠ Warning: acServerWrapper port not listening (wrapper may still be starting)"
+    fi
+fi
+
 # Check HTTP health endpoint
 log_message "Checking HTTP endpoint..."
 if curl -sS --max-time 5 http://127.0.0.1:$AC_SERVER_HTTP_PORT/ > /dev/null 2>&1; then
@@ -508,7 +563,11 @@ if [ "$validation_failed" = true ]; then
     log_message "Check systemd status: systemctl status acserver"
     log_message "Check service logs: journalctl -u acserver -n 50"
     
-    write_status false "$PUBLIC_IP"
+    HAS_WRAPPER="false"
+    if [ -n "$WRAPPER_PATH" ]; then
+        HAS_WRAPPER="true"
+    fi
+    write_status false "$PUBLIC_IP" "$HAS_WRAPPER"
     exit 1
 else
     log_message "===== VALIDATION PASSED ====="
@@ -516,7 +575,13 @@ else
     log_message "Server is accessible at: $PUBLIC_IP:$AC_SERVER_TCP_PORT"
     log_message "acstuff join link: $ACSTUFF_URL"
     
-    write_status true "$PUBLIC_IP"
+    HAS_WRAPPER="false"
+    if [ -n "$WRAPPER_PATH" ]; then
+        HAS_WRAPPER="true"
+        log_message "acServerWrapper is running on port $AC_SERVER_WRAPPER_PORT"
+    fi
+    
+    write_status true "$PUBLIC_IP" "$HAS_WRAPPER"
     exit 0
 fi
 """
