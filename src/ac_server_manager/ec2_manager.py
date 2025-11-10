@@ -376,7 +376,147 @@ if [ -n "$WRAPPER_PATH" ]; then
     WRAPPER_TYPE=$(file "$WRAPPER_PATH")
     log_message "Wrapper type: $WRAPPER_TYPE"
     
-    # Create systemd service for wrapper
+    # Set up wrapper preset directory structure
+    PRESET_DIR="/opt/acserver/preset"
+    mkdir -p "$PRESET_DIR"
+    log_message "Created preset directory: $PRESET_DIR"
+    
+    # Look for cm_content directory in the extracted pack
+    if [ -d "$WORKING_DIR/cm_content" ]; then
+        log_message "Found cm_content directory in pack"
+        cp -r "$WORKING_DIR/cm_content" "$PRESET_DIR/"
+    elif [ -d "/opt/acserver/cm_content" ]; then
+        log_message "Found cm_content directory at /opt/acserver"
+        cp -r /opt/acserver/cm_content "$PRESET_DIR/"
+    else
+        log_message "Creating cm_content directory"
+        mkdir -p "$PRESET_DIR/cm_content"
+    fi
+    
+    # Process content.json if it exists
+    CONTENT_JSON=""
+    if [ -f "$WORKING_DIR/content.json" ]; then
+        CONTENT_JSON="$WORKING_DIR/content.json"
+    elif [ -f "/opt/acserver/content.json" ]; then
+        CONTENT_JSON="/opt/acserver/content.json"
+    elif [ -f "$PRESET_DIR/cm_content/content.json" ]; then
+        CONTENT_JSON="$PRESET_DIR/cm_content/content.json"
+    fi
+    
+    if [ -n "$CONTENT_JSON" ]; then
+        log_message "Found content.json at: $CONTENT_JSON"
+        
+        # Copy content.json to preset directory
+        cp "$CONTENT_JSON" "$PRESET_DIR/content.json"
+        
+        # Fix Windows paths in content.json using Python
+        log_message "Fixing Windows paths in content.json..."
+        python3 << PYEOF
+import json
+import re
+import sys
+import os
+
+content_json_path = "$PRESET_DIR/content.json"
+cm_content_dir = "$PRESET_DIR/cm_content"
+
+try:
+    with open(content_json_path, 'r') as f:
+        data = json.load(f)
+    
+    # Fix Windows absolute paths (C:\\\\ or C:/)
+    def fix_path(path_str):
+        if not isinstance(path_str, str):
+            return path_str
+        # Check if it's a Windows absolute path
+        if re.match(r'^[a-zA-Z]:[/\\\\\\\\]', path_str):
+            # Extract just the filename
+            filename = os.path.basename(path_str.replace('\\\\\\\\', '/'))
+            return filename
+        return path_str
+    
+    # Fix car file paths
+    if 'cars' in data and isinstance(data['cars'], dict):
+        for car_key, car_info in data['cars'].items():
+            if isinstance(car_info, dict) and 'file' in car_info:
+                car_info['file'] = fix_path(car_info['file'])
+    
+    # Fix track file paths
+    if 'track' in data and isinstance(data['track'], dict):
+        if 'file' in data['track']:
+            data['track']['file'] = fix_path(data['track']['file'])
+        if 'url' in data['track']:
+            # Only fix if it's not an actual URL
+            url = data['track']['url']
+            if not url.startswith('http://') and not url.startswith('https://'):
+                data['track']['url'] = fix_path(url)
+    
+    # Write back
+    with open(content_json_path, 'w') as f:
+        json.dump(data, f, indent=2)
+    
+    print("Successfully fixed content.json paths")
+except Exception as ex:
+    print(f"Error processing content.json: {{ex}}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+        log_message "✓ content.json paths fixed"
+    else
+        log_message "⚠ No content.json found - wrapper may not serve files correctly"
+    fi
+    
+    # Look for existing cm_wrapper_params.json in the pack
+    WRAPPER_PARAMS=""
+    if [ -f "$WORKING_DIR/cm_wrapper_params.json" ]; then
+        WRAPPER_PARAMS="$WORKING_DIR/cm_wrapper_params.json"
+    elif [ -f "/opt/acserver/cm_wrapper_params.json" ]; then
+        WRAPPER_PARAMS="/opt/acserver/cm_wrapper_params.json"
+    fi
+    
+    if [ -n "$WRAPPER_PARAMS" ]; then
+        log_message "Found cm_wrapper_params.json in pack, copying to preset directory"
+        cp "$WRAPPER_PARAMS" "$PRESET_DIR/cm_wrapper_params.json"
+        
+        # Update port in the params file to match our configuration
+        log_message "Updating wrapper port to $AC_SERVER_WRAPPER_PORT"
+        python3 << PYEOF
+import json
+import sys
+
+params_path = "$PRESET_DIR/cm_wrapper_params.json"
+
+try:
+    with open(params_path, 'r') as f:
+        params = json.load(f)
+    
+    # Update port to our configured wrapper port
+    params['port'] = $AC_SERVER_WRAPPER_PORT
+    
+    with open(params_path, 'w') as f:
+        json.dump(params, f, indent=2)
+    
+    print(f"Updated wrapper port to $AC_SERVER_WRAPPER_PORT")
+except Exception as ex:
+    print(f"Error updating cm_wrapper_params.json: {{ex}}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+    else
+        log_message "Creating default cm_wrapper_params.json"
+        cat > "$PRESET_DIR/cm_wrapper_params.json" << EOFPARAMS
+{{
+  "port": $AC_SERVER_WRAPPER_PORT,
+  "downloadSpeedLimit": 0,
+  "uploadSpeedLimit": 0,
+  "enabled": true
+}}
+EOFPARAMS
+    fi
+    
+    # Set permissions
+    chown -R root:root "$PRESET_DIR"
+    chmod -R 755 "$PRESET_DIR"
+    
+    # Create systemd service for wrapper with preset directory argument
     cat > /etc/systemd/system/acserver-wrapper.service << EOFWRAPPER
 [Unit]
 Description=AC Server Wrapper (Content Manager file server)
@@ -386,8 +526,8 @@ Requires=acserver.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$WORKING_DIR
-ExecStart=$WRAPPER_PATH
+WorkingDirectory=$PRESET_DIR
+ExecStart=$WRAPPER_PATH $PRESET_DIR
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/var/log/acserver-wrapper-stdout.log
@@ -398,6 +538,7 @@ WantedBy=multi-user.target
 EOFWRAPPER
     
     log_message "✓ acServerWrapper systemd service created"
+    log_message "Preset directory: $PRESET_DIR"
     
     # Enable and start wrapper service
     systemctl daemon-reload
