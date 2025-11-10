@@ -5,6 +5,7 @@ Purely vibecoded automated deployment tool for Assetto Corsa dedicated servers o
 ## Features
 
 - 🚀 **One-command deployment** from Content Manager server packs
+- 📦 **Automatic content downloads** via ac-server-wrapper (enabled by default)
 - ☁️ **AWS-powered** using EC2 and S3
 - 💰 **Cost-optimized** with t3.small instances (~$15/month)
 - 🔄 **Complete lifecycle** management (deploy, start, stop, terminate)
