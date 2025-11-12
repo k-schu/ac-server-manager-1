@@ -29,12 +29,15 @@ class EC2Manager:
         self.ec2_client = boto3.client("ec2", region_name=region)
         self.ec2_resource = boto3.resource("ec2", region_name=region)
 
-    def create_security_group(self, group_name: str, description: str) -> Optional[str]:
+    def create_security_group(
+        self, group_name: str, description: str, wrapper_port: Optional[int] = None
+    ) -> Optional[str]:
         """Create security group with rules for AC server.
 
         Args:
             group_name: Name of the security group
             description: Description of the security group
+            wrapper_port: Custom wrapper port (uses default if None)
 
         Returns:
             Security group ID, or None if creation failed
@@ -56,6 +59,11 @@ class EC2Manager:
             )
             group_id = create_response["GroupId"]
             logger.info(f"Created security group {group_name}: {group_id}")
+
+            # Use the provided wrapper port or fall back to default
+            effective_wrapper_port = (
+                wrapper_port if wrapper_port is not None else AC_SERVER_WRAPPER_PORT
+            )
 
             # Add ingress rules for AC server
             self.ec2_client.authorize_security_group_ingress(
@@ -95,8 +103,8 @@ class EC2Manager:
                     },
                     {
                         "IpProtocol": "tcp",
-                        "FromPort": AC_SERVER_WRAPPER_PORT,
-                        "ToPort": AC_SERVER_WRAPPER_PORT,
+                        "FromPort": effective_wrapper_port,
+                        "ToPort": effective_wrapper_port,
                         "IpRanges": [
                             {"CidrIp": "0.0.0.0/0", "Description": "AC Server Wrapper (Alt)"}
                         ],
@@ -143,16 +151,22 @@ class EC2Manager:
             logger.error(f"Error getting AMI: {e}")
             return None
 
-    def create_user_data_script(self, s3_bucket: str, s3_key: str) -> str:
+    def create_user_data_script(
+        self, s3_bucket: str, s3_key: str, wrapper_port: Optional[int] = None
+    ) -> str:
         """Create user data script for instance initialization.
 
         Args:
             s3_bucket: S3 bucket containing the pack file
             s3_key: S3 key of the pack file
+            wrapper_port: Custom wrapper port (uses default if None)
 
         Returns:
             User data script as string
         """
+        effective_wrapper_port = (
+            wrapper_port if wrapper_port is not None else AC_SERVER_WRAPPER_PORT
+        )
         script = f"""#!/bin/bash
 set -euo pipefail
 
@@ -163,7 +177,7 @@ VALIDATION_TIMEOUT=120
 AC_SERVER_TCP_PORT={AC_SERVER_TCP_PORT}
 AC_SERVER_UDP_PORT={AC_SERVER_UDP_PORT}
 AC_SERVER_HTTP_PORT={AC_SERVER_HTTP_PORT}
-AC_SERVER_WRAPPER_PORT={AC_SERVER_WRAPPER_PORT}
+AC_SERVER_WRAPPER_PORT={effective_wrapper_port}
 
 # Logging function - logs to both file and cloud-init output
 log_message() {{
@@ -393,7 +407,72 @@ if [ -n "$WRAPPER_PATH" ]; then
     if [ -n "$CONTENT_JSON" ]; then
         cp "$CONTENT_JSON" "$PRESET_DIR/content.json"
         log_message "Fixing content.json paths..."
-        sed -i 's|[Cc]:[/\\][^"]*[/\\]\\([^"]*\\)|\\1|g' "$PRESET_DIR/content.json"
+        # Normalize file paths to be relative to the preset directory
+        # The wrapper serves files from $PRESET_DIR, and content files are in $PRESET_DIR/cm_content/
+        # Strategy: Remove absolute path prefixes and ensure paths start with cm_content/
+        
+        # Use Python for more reliable JSON path normalization
+        python3 << 'EOFPYTHON'
+import json
+import os
+import re
+
+content_json_path = "/opt/acserver/preset/content.json"
+
+try:
+    with open(content_json_path, 'r') as f:
+        data = json.load(f)
+    
+    # Helper function to normalize a path
+    def normalize_path(path):
+        if not isinstance(path, str):
+            return path
+        
+        # Remove Windows drive letters and convert backslashes
+        # C:\\\\path\\\\to\\\\file -> path\\\\to\\\\file
+        path = re.sub(r'^[A-Za-z]:[/\\\\\\\\]', '', path)
+        
+        # Convert all backslashes to forward slashes
+        path = path.replace('\\\\\\\\', '/')
+        
+        # Remove leading slashes
+        path = path.lstrip('/')
+        
+        # If path doesn't start with cm_content/, prepend it
+        if not path.startswith('cm_content/'):
+            # Extract just the filename if it's a full path
+            filename = os.path.basename(path)
+            path = 'cm_content/' + filename
+        
+        return path
+    
+    # Recursively process all string values in the JSON
+    def process_value(obj):
+        if isinstance(obj, dict):
+            result = {{}}
+            for k in obj:
+                result[k] = process_value(obj[k])
+            return result
+        elif isinstance(obj, list):
+            return [process_value(item) for item in obj]
+        elif isinstance(obj, str):
+            # Only normalize if it looks like a file path (contains / or \\\\\\\\ or has file extension)
+            if '/' in obj or '\\\\\\\\' in obj or re.search(r'\\\\.\\[a-zA-Z0-9]+$', obj):
+                return normalize_path(obj)
+            return obj
+        else:
+            return obj
+    
+    normalized_data = process_value(data)
+    
+    with open(content_json_path, 'w') as f:
+        json.dump(normalized_data, f, indent=2)
+    
+    print("✓ content.json normalized successfully")
+except Exception as e:
+    print("⚠ Warning: Failed to normalize content.json: " + str(e))
+EOFPYTHON
+        
         log_message "✓ content.json fixed"
     else
         log_message "⚠ No content.json found"

@@ -7,6 +7,7 @@ from typing import Optional
 from .config import ServerConfig
 from .ec2_manager import EC2Manager
 from .iam_manager import IAMManager
+from .pack_utils import extract_wrapper_port_from_pack
 from .s3_manager import S3Manager
 
 logger = logging.getLogger(__name__)
@@ -36,18 +37,25 @@ class Deployer:
         """
         logger.info("Starting AC server deployment")
 
-        # Step 1: Create S3 bucket if needed
+        # Step 1: Extract wrapper port from pack if present
+        wrapper_port = extract_wrapper_port_from_pack(pack_file_path)
+        if wrapper_port:
+            logger.info(f"Using wrapper port from pack: {wrapper_port}")
+        else:
+            logger.info("No wrapper port found in pack, using default")
+
+        # Step 2: Create S3 bucket if needed
         if not self.s3_manager.create_bucket():
             logger.error("Failed to create S3 bucket")
             return None
 
-        # Step 2: Upload pack to S3
+        # Step 3: Upload pack to S3
         s3_key = self.s3_manager.upload_pack(pack_file_path)
         if not s3_key:
             logger.error("Failed to upload pack to S3")
             return None
 
-        # Step 3: Determine IAM instance profile to use
+        # Step 4: Determine IAM instance profile to use
         iam_profile_to_use = None
         if self.config.iam_instance_profile:
             # User provided an explicit instance profile - use it
@@ -72,24 +80,28 @@ class Deployer:
                 )
                 return None
 
-        # Step 4: Create security group
+        # Step 5: Create security group with wrapper port
         security_group_id = self.ec2_manager.create_security_group(
-            self.config.security_group_name, "Security group for Assetto Corsa server"
+            self.config.security_group_name,
+            "Security group for Assetto Corsa server",
+            wrapper_port,
         )
         if not security_group_id:
             logger.error("Failed to create security group")
             return None
 
-        # Step 5: Get Ubuntu AMI
+        # Step 6: Get Ubuntu AMI
         ami_id = self.ec2_manager.get_ubuntu_ami()
         if not ami_id:
             logger.error("Failed to get Ubuntu AMI")
             return None
 
-        # Step 6: Create user data script
-        user_data = self.ec2_manager.create_user_data_script(self.config.s3_bucket_name, s3_key)
+        # Step 7: Create user data script with wrapper port
+        user_data = self.ec2_manager.create_user_data_script(
+            self.config.s3_bucket_name, s3_key, wrapper_port
+        )
 
-        # Step 7: Launch instance
+        # Step 8: Launch instance
         instance_id = self.ec2_manager.launch_instance(
             ami_id=ami_id,
             instance_type=self.config.instance_type,
