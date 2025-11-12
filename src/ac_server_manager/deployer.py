@@ -55,11 +55,32 @@ class Deployer:
             logger.error("Failed to upload pack to S3")
             return None
 
-        # Step 4: Determine IAM instance profile to use
+        # Step 4: Upload full installer script to S3
+        from pathlib import Path as PathLib
+
+        installer_template_path = (
+            PathLib(__file__).parent / "user_data_templates" / "full_installer.sh"
+        )
+        with open(installer_template_path, "r") as f:
+            installer_content = f.read()
+
+        installer_s3_key = f"installers/full_installer_{pack_file_path.stem}.sh"
+        if not self.s3_manager.upload_file_content(installer_content, installer_s3_key):
+            logger.error("Failed to upload installer script to S3")
+            return None
+
+        logger.info(
+            f"Uploaded installer script to s3://{self.config.s3_bucket_name}/{installer_s3_key}"
+        )
+
+        # Step 5: Determine IAM instance profile to use
         iam_profile_to_use = None
+        use_presigned_url = True
+
         if self.config.iam_instance_profile:
             # User provided an explicit instance profile - use it
             iam_profile_to_use = self.config.iam_instance_profile
+            use_presigned_url = False
             logger.info(f"Using existing IAM instance profile: {iam_profile_to_use}")
         elif self.config.auto_create_iam:
             # Auto-create IAM role and instance profile
@@ -72,15 +93,29 @@ class Deployer:
                 iam_profile_to_use = iam_manager.ensure_role_and_instance_profile(
                     role_name, profile_name, self.config.s3_bucket_name
                 )
+                use_presigned_url = False
                 logger.info(f"IAM resources configured successfully: {iam_profile_to_use}")
             except Exception as e:
                 logger.error(f"Failed to create IAM resources: {e}")
-                logger.error(
-                    "Deployment cannot continue without IAM instance profile for S3 access"
-                )
+                logger.warning("Will use presigned URLs instead of IAM instance profile")
+                use_presigned_url = True
+
+        # Step 6: Generate presigned URLs if needed
+        presigned_url_installer = None
+        presigned_url_pack = None
+        if use_presigned_url:
+            logger.info("Generating presigned URLs for installer and pack download")
+            presigned_url_installer = self.s3_manager.generate_presigned_url(
+                installer_s3_key, expiration=7200  # 2 hours
+            )
+            presigned_url_pack = self.s3_manager.generate_presigned_url(
+                s3_key, expiration=7200  # 2 hours
+            )
+            if not presigned_url_installer or not presigned_url_pack:
+                logger.error("Failed to generate presigned URLs")
                 return None
 
-        # Step 5: Create security group with wrapper port
+        # Step 7: Create security group with wrapper port
         security_group_id = self.ec2_manager.create_security_group(
             self.config.security_group_name,
             "Security group for Assetto Corsa server",
@@ -90,18 +125,30 @@ class Deployer:
             logger.error("Failed to create security group")
             return None
 
-        # Step 6: Get Ubuntu AMI
+        # Step 8: Get Ubuntu AMI
         ami_id = self.ec2_manager.get_ubuntu_ami()
         if not ami_id:
             logger.error("Failed to get Ubuntu AMI")
             return None
 
-        # Step 7: Create user data script with wrapper port
-        user_data = self.ec2_manager.create_user_data_script(
-            self.config.s3_bucket_name, s3_key, wrapper_port
+        # Step 9: Create minimal user data script
+        user_data = self.ec2_manager.create_minimal_user_data_script(
+            self.config.s3_bucket_name,
+            s3_key,
+            installer_s3_key,
+            presigned_url_installer,
+            presigned_url_pack,
+            wrapper_port,
         )
 
-        # Step 8: Launch instance
+        # Step 10: Validate user-data size
+        try:
+            self.ec2_manager.validate_user_data_size(user_data)
+        except RuntimeError as e:
+            logger.error(str(e))
+            return None
+
+        # Step 11: Launch instance
         instance_id = self.ec2_manager.launch_instance(
             ami_id=ami_id,
             instance_type=self.config.instance_type,
@@ -116,7 +163,7 @@ class Deployer:
             logger.error("Failed to launch instance")
             return None
 
-        # Step 8: Get public IP
+        # Step 12: Get public IP
         public_ip = self.ec2_manager.get_instance_public_ip(instance_id)
         if public_ip:
             logger.info("AC server deployed successfully!")

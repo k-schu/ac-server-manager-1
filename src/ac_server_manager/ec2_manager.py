@@ -1,6 +1,7 @@
 """EC2 operations for AC Server Manager."""
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 import boto3
@@ -701,6 +702,80 @@ else
 fi
 """
         return script
+
+    def create_minimal_user_data_script(
+        self,
+        s3_bucket: str,
+        s3_key: str,
+        installer_s3_key: str,
+        presigned_url_installer: Optional[str],
+        presigned_url_pack: Optional[str],
+        wrapper_port: Optional[int] = None,
+    ) -> str:
+        """Create minimal user data script that downloads installer from S3.
+
+        Args:
+            s3_bucket: S3 bucket name containing pack and installer
+            s3_key: S3 key of the pack file
+            installer_s3_key: S3 key of the installer script
+            presigned_url_installer: Presigned URL for installer (if no instance profile)
+            presigned_url_pack: Presigned URL for pack (if no instance profile)
+            wrapper_port: Custom wrapper port (uses default if None)
+
+        Returns:
+            Minimal user data script as string
+        """
+        effective_wrapper_port = (
+            wrapper_port if wrapper_port is not None else AC_SERVER_WRAPPER_PORT
+        )
+
+        # Determine download command and required packages
+        if presigned_url_installer and presigned_url_pack:
+            install_cmd = "curl"
+            download_cmd = f'curl -fsSL "{presigned_url_installer}" -o "$INSTALLER_SCRIPT" 2>&1 | tee -a "$DEPLOY_LOG"'
+            env_exports = f'export PRESIGNED_URL="{presigned_url_pack}"'
+        else:
+            install_cmd = "awscli curl"
+            download_cmd = f'aws s3 cp "s3://{s3_bucket}/{installer_s3_key}" "$INSTALLER_SCRIPT" 2>&1 | tee -a "$DEPLOY_LOG"'
+            env_exports = f'export S3_BUCKET="{s3_bucket}"\nexport S3_KEY="{s3_key}"'
+
+        # Load bootstrap template
+        template_path = Path(__file__).parent / "user_data_templates" / "s3_bootstrap.sh"
+        with open(template_path, "r") as f:
+            template = f.read()
+
+        # Substitute variables
+        script = template.format(
+            install_cmd=install_cmd,
+            download_cmd=download_cmd,
+            tcp_port=AC_SERVER_TCP_PORT,
+            udp_port=AC_SERVER_UDP_PORT,
+            http_port=AC_SERVER_HTTP_PORT,
+            wrapper_port=effective_wrapper_port,
+            env_exports=env_exports,
+        )
+
+        return script
+
+    def validate_user_data_size(self, user_data: str) -> None:
+        """Validate that user-data does not exceed AWS limit.
+
+        Args:
+            user_data: User data script
+
+        Raises:
+            RuntimeError: If user-data exceeds 16384 bytes
+        """
+        size = len(user_data.encode("utf-8"))
+        limit = 16384
+
+        if size >= limit:
+            raise RuntimeError(
+                f"User-data size ({size} bytes) exceeds AWS EC2 limit ({limit} bytes). "
+                f"Reduce user-data content or use S3 bootstrap approach."
+            )
+
+        logger.info(f"User-data size: {size} bytes (limit: {limit} bytes)")
 
     def launch_instance(
         self,
