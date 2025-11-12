@@ -85,6 +85,48 @@ class S3Manager:
             logger.error(f"Error uploading pack: {e}")
             return None
 
+    def upload_file_content(self, content: str, s3_key: str) -> bool:
+        """Upload file content to S3.
+
+        Args:
+            content: File content as string
+            s3_key: S3 object key
+
+        Returns:
+            True if upload succeeded, False otherwise
+        """
+        try:
+            self.s3_client.put_object(
+                Bucket=self.bucket_name, Key=s3_key, Body=content.encode("utf-8")
+            )
+            logger.info(f"Uploaded content to s3://{self.bucket_name}/{s3_key}")
+            return True
+        except ClientError as e:
+            logger.error(f"Error uploading content: {e}")
+            return False
+
+    def generate_presigned_url(self, s3_key: str, expiration: int = 3600) -> Optional[str]:
+        """Generate a presigned URL for downloading an S3 object.
+
+        Args:
+            s3_key: S3 object key
+            expiration: URL expiration time in seconds (default: 3600 = 1 hour)
+
+        Returns:
+            Presigned URL string, or None if generation failed
+        """
+        try:
+            url = self.s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket_name, "Key": s3_key},
+                ExpiresIn=expiration,
+            )
+            logger.info(f"Generated presigned URL for s3://{self.bucket_name}/{s3_key}")
+            return url
+        except ClientError as e:
+            logger.error(f"Error generating presigned URL: {e}")
+            return None
+
     def download_pack(self, s3_key: str, local_path: Path) -> bool:
         """Download AC server pack from S3.
 

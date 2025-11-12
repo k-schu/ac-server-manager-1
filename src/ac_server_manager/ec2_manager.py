@@ -1,12 +1,18 @@
 """EC2 operations for AC Server Manager."""
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 import boto3
 from botocore.exceptions import ClientError
 
-from .config import AC_SERVER_HTTP_PORT, AC_SERVER_TCP_PORT, AC_SERVER_UDP_PORT
+from .config import (
+    AC_SERVER_HTTP_PORT,
+    AC_SERVER_TCP_PORT,
+    AC_SERVER_UDP_PORT,
+    AC_SERVER_WRAPPER_PORT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +30,15 @@ class EC2Manager:
         self.ec2_client = boto3.client("ec2", region_name=region)
         self.ec2_resource = boto3.resource("ec2", region_name=region)
 
-    def create_security_group(self, group_name: str, description: str) -> Optional[str]:
+    def create_security_group(
+        self, group_name: str, description: str, wrapper_port: Optional[int] = None
+    ) -> Optional[str]:
         """Create security group with rules for AC server.
 
         Args:
             group_name: Name of the security group
             description: Description of the security group
+            wrapper_port: Custom wrapper port (uses default if None)
 
         Returns:
             Security group ID, or None if creation failed
@@ -52,6 +61,11 @@ class EC2Manager:
             group_id = create_response["GroupId"]
             logger.info(f"Created security group {group_name}: {group_id}")
 
+            # Use the provided wrapper port or fall back to default
+            effective_wrapper_port = (
+                wrapper_port if wrapper_port is not None else AC_SERVER_WRAPPER_PORT
+            )
+
             # Add ingress rules for AC server
             self.ec2_client.authorize_security_group_ingress(
                 GroupId=group_id,
@@ -61,6 +75,14 @@ class EC2Manager:
                         "FromPort": 22,
                         "ToPort": 22,
                         "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}],
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 80,
+                        "ToPort": 80,
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "AC Server Wrapper (HTTP)"}
+                        ],
                     },
                     {
                         "IpProtocol": "tcp",
@@ -79,6 +101,14 @@ class EC2Manager:
                         "FromPort": AC_SERVER_UDP_PORT,
                         "ToPort": AC_SERVER_UDP_PORT,
                         "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "AC UDP"}],
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": effective_wrapper_port,
+                        "ToPort": effective_wrapper_port,
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "AC Server Wrapper (Alt)"}
+                        ],
                     },
                 ],
             )
@@ -122,16 +152,22 @@ class EC2Manager:
             logger.error(f"Error getting AMI: {e}")
             return None
 
-    def create_user_data_script(self, s3_bucket: str, s3_key: str) -> str:
+    def create_user_data_script(
+        self, s3_bucket: str, s3_key: str, wrapper_port: Optional[int] = None
+    ) -> str:
         """Create user data script for instance initialization.
 
         Args:
             s3_bucket: S3 bucket containing the pack file
             s3_key: S3 key of the pack file
+            wrapper_port: Custom wrapper port (uses default if None)
 
         Returns:
             User data script as string
         """
+        effective_wrapper_port = (
+            wrapper_port if wrapper_port is not None else AC_SERVER_WRAPPER_PORT
+        )
         script = f"""#!/bin/bash
 set -euo pipefail
 
@@ -142,6 +178,7 @@ VALIDATION_TIMEOUT=120
 AC_SERVER_TCP_PORT={AC_SERVER_TCP_PORT}
 AC_SERVER_UDP_PORT={AC_SERVER_UDP_PORT}
 AC_SERVER_HTTP_PORT={AC_SERVER_HTTP_PORT}
+AC_SERVER_WRAPPER_PORT={effective_wrapper_port}
 
 # Logging function - logs to both file and cloud-init output
 log_message() {{
@@ -160,6 +197,7 @@ add_error() {{
 write_status() {{
     local success=$1
     local public_ip=$2
+    local has_wrapper=${{3:-false}}
     local timestamp=$(date -Iseconds)
     
     cat > "$STATUS_FILE" << STATUSEOF
@@ -170,8 +208,10 @@ write_status() {{
   "ports": {{
     "tcp": $AC_SERVER_TCP_PORT,
     "udp": $AC_SERVER_UDP_PORT,
-    "http": $AC_SERVER_HTTP_PORT
+    "http": $AC_SERVER_HTTP_PORT,
+    "wrapper": $AC_SERVER_WRAPPER_PORT
   }},
+  "wrapper_enabled": $has_wrapper,
   "error_messages": [
     $(printf '"%s"' "${{ERROR_MESSAGES[@]}}" | paste -sd, -)
   ]
@@ -339,6 +379,86 @@ systemctl daemon-reload
 systemctl enable acserver
 systemctl start acserver
 
+# Detect and configure acServerWrapper if present
+log_message "Checking for acServerWrapper binary..."
+WRAPPER_PATH=""
+for location in "$WORKING_DIR" "$WORKING_DIR/bin" "$WORKING_DIR/build"; do
+    if [ -f "$location/acServerWrapper" ]; then
+        WRAPPER_PATH="$location/acServerWrapper"
+        log_message "Found acServerWrapper at: $WRAPPER_PATH"
+        break
+    fi
+done
+
+if [ -n "$WRAPPER_PATH" ]; then
+    log_message "Setting up acServerWrapper service..."
+    
+    chmod +x "$WRAPPER_PATH"
+    chown root:root "$WRAPPER_PATH"
+    
+    PRESET_DIR="/opt/acserver/preset"
+    mkdir -p "$PRESET_DIR/cfg/cm_content"
+    
+    # Copy cm_content from cfg/cm_content in the pack
+    [ -d "$WORKING_DIR/cfg/cm_content" ] && cp -r "$WORKING_DIR/cfg/cm_content"/* "$PRESET_DIR/cfg/cm_content/" 2>/dev/null || [ -d "/opt/acserver/cfg/cm_content" ] && cp -r /opt/acserver/cfg/cm_content/* "$PRESET_DIR/cfg/cm_content/" 2>/dev/null || true
+    
+    # Look for content.json in cfg/cm_content folder (where it is in Windows packs)
+    CONTENT_JSON=""
+    [ -f "$WORKING_DIR/cfg/cm_content/content.json" ] && CONTENT_JSON="$WORKING_DIR/cfg/cm_content/content.json" || [ -f "/opt/acserver/cfg/cm_content/content.json" ] && CONTENT_JSON="/opt/acserver/cfg/cm_content/content.json" || true
+    
+    # Fix Windows paths in content.json: C:\path\to\file.zip -> file.zip
+    [ -n "$CONTENT_JSON" ] && cp "$CONTENT_JSON" "$PRESET_DIR/cfg/cm_content/content.json" && sed -i 's|[Cc]:[/\\][^"]*[/\\]||g' "$PRESET_DIR/cfg/cm_content/content.json"
+    
+    # Look for existing cm_wrapper_params.json in the pack (should be in cfg folder)
+    WRAPPER_PARAMS=""
+    if [ -f "$WORKING_DIR/cfg/cm_wrapper_params.json" ]; then
+        WRAPPER_PARAMS="$WORKING_DIR/cfg/cm_wrapper_params.json"
+    elif [ -f "/opt/acserver/cfg/cm_wrapper_params.json" ]; then
+        WRAPPER_PARAMS="/opt/acserver/cfg/cm_wrapper_params.json"
+    elif [ -f "$WORKING_DIR/cm_wrapper_params.json" ]; then
+        WRAPPER_PARAMS="$WORKING_DIR/cm_wrapper_params.json"
+    elif [ -f "/opt/acserver/cm_wrapper_params.json" ]; then
+        WRAPPER_PARAMS="/opt/acserver/cm_wrapper_params.json"
+    fi
+    
+    # Copy to cfg folder (where wrapper expects it)
+    [ -n "$WRAPPER_PARAMS" ] && cp "$WRAPPER_PARAMS" "$PRESET_DIR/cfg/cm_wrapper_params.json" || echo "{{\\"port\\":$AC_SERVER_WRAPPER_PORT,\\"enabled\\":true}}" > "$PRESET_DIR/cfg/cm_wrapper_params.json"
+    
+    chown -R root:root "$PRESET_DIR"
+    chmod -R 755 "$PRESET_DIR"
+    
+    cat > /etc/systemd/system/acserver-wrapper.service << EOFWRAPPER
+[Unit]
+Description=AC Server Wrapper (Content Manager file server)
+After=network.target acserver.service
+Requires=acserver.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$PRESET_DIR
+ExecStart=$WRAPPER_PATH $PRESET_DIR
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/acserver-wrapper-stdout.log
+StandardError=append:/var/log/acserver-wrapper-stderr.log
+
+[Install]
+WantedBy=multi-user.target
+EOFWRAPPER
+    
+    log_message "✓ acServerWrapper systemd service created"
+    log_message "Preset directory: $PRESET_DIR"
+    
+    # Enable and start wrapper service
+    systemctl daemon-reload
+    systemctl enable acserver-wrapper
+    systemctl start acserver-wrapper
+    log_message "✓ acServerWrapper service started"
+else
+    log_message "ℹ acServerWrapper not found - skipping wrapper setup"
+fi
+
 # Wait for server to start
 log_message "Waiting for server to initialize (timeout: ${{VALIDATION_TIMEOUT}}s)..."
 sleep 10
@@ -417,6 +537,16 @@ if ! check_port_listening tcp $AC_SERVER_HTTP_PORT "HTTP"; then
     validation_failed=true
 fi
 
+# Check wrapper port if wrapper was configured
+if [ -n "$WRAPPER_PATH" ]; then
+    log_message "Checking acServerWrapper port..."
+    if check_port_listening tcp $AC_SERVER_WRAPPER_PORT "wrapper"; then
+        log_message "✓ acServerWrapper is listening on port $AC_SERVER_WRAPPER_PORT"
+    else
+        log_message "⚠ Warning: acServerWrapper port not listening (wrapper may still be starting)"
+    fi
+fi
+
 # Check HTTP health endpoint
 log_message "Checking HTTP endpoint..."
 if curl -sS --max-time 5 http://127.0.0.1:$AC_SERVER_HTTP_PORT/ > /dev/null 2>&1; then
@@ -484,7 +614,11 @@ if [ "$validation_failed" = true ]; then
     log_message "Check systemd status: systemctl status acserver"
     log_message "Check service logs: journalctl -u acserver -n 50"
     
-    write_status false "$PUBLIC_IP"
+    HAS_WRAPPER="false"
+    if [ -n "$WRAPPER_PATH" ]; then
+        HAS_WRAPPER="true"
+    fi
+    write_status false "$PUBLIC_IP" "$HAS_WRAPPER"
     exit 1
 else
     log_message "===== VALIDATION PASSED ====="
@@ -492,11 +626,91 @@ else
     log_message "Server is accessible at: $PUBLIC_IP:$AC_SERVER_TCP_PORT"
     log_message "acstuff join link: $ACSTUFF_URL"
     
-    write_status true "$PUBLIC_IP"
+    HAS_WRAPPER="false"
+    if [ -n "$WRAPPER_PATH" ]; then
+        HAS_WRAPPER="true"
+        log_message "acServerWrapper is running on port $AC_SERVER_WRAPPER_PORT"
+    fi
+    
+    write_status true "$PUBLIC_IP" "$HAS_WRAPPER"
     exit 0
 fi
 """
         return script
+
+    def create_minimal_user_data_script(
+        self,
+        s3_bucket: str,
+        s3_key: str,
+        installer_s3_key: str,
+        presigned_url_installer: Optional[str],
+        presigned_url_pack: Optional[str],
+        wrapper_port: Optional[int] = None,
+    ) -> str:
+        """Create minimal user data script that downloads installer from S3.
+
+        Args:
+            s3_bucket: S3 bucket name containing pack and installer
+            s3_key: S3 key of the pack file
+            installer_s3_key: S3 key of the installer script
+            presigned_url_installer: Presigned URL for installer (if no instance profile)
+            presigned_url_pack: Presigned URL for pack (if no instance profile)
+            wrapper_port: Custom wrapper port (uses default if None)
+
+        Returns:
+            Minimal user data script as string
+        """
+        effective_wrapper_port = (
+            wrapper_port if wrapper_port is not None else AC_SERVER_WRAPPER_PORT
+        )
+
+        # Determine download command and required packages
+        if presigned_url_installer and presigned_url_pack:
+            install_cmd = "curl"
+            download_cmd = f'curl -fsSL "{presigned_url_installer}" -o "$INSTALLER_SCRIPT" 2>&1 | tee -a "$DEPLOY_LOG"'
+            env_exports = f'export PRESIGNED_URL="{presigned_url_pack}"'
+        else:
+            install_cmd = "awscli curl"
+            download_cmd = f'aws s3 cp "s3://{s3_bucket}/{installer_s3_key}" "$INSTALLER_SCRIPT" 2>&1 | tee -a "$DEPLOY_LOG"'
+            env_exports = f'export S3_BUCKET="{s3_bucket}"\nexport S3_KEY="{s3_key}"'
+
+        # Load bootstrap template
+        template_path = Path(__file__).parent / "user_data_templates" / "s3_bootstrap.sh"
+        with open(template_path, "r") as f:
+            template = f.read()
+
+        # Substitute variables
+        script = template.format(
+            install_cmd=install_cmd,
+            download_cmd=download_cmd,
+            tcp_port=AC_SERVER_TCP_PORT,
+            udp_port=AC_SERVER_UDP_PORT,
+            http_port=AC_SERVER_HTTP_PORT,
+            wrapper_port=effective_wrapper_port,
+            env_exports=env_exports,
+        )
+
+        return script
+
+    def validate_user_data_size(self, user_data: str) -> None:
+        """Validate that user-data does not exceed AWS limit.
+
+        Args:
+            user_data: User data script
+
+        Raises:
+            RuntimeError: If user-data exceeds 16384 bytes
+        """
+        size = len(user_data.encode("utf-8"))
+        limit = 16384
+
+        if size >= limit:
+            raise RuntimeError(
+                f"User-data size ({size} bytes) exceeds AWS EC2 limit ({limit} bytes). "
+                f"Reduce user-data content or use S3 bootstrap approach."
+            )
+
+        logger.info(f"User-data size: {size} bytes (limit: {limit} bytes)")
 
     def launch_instance(
         self,

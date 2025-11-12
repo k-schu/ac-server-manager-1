@@ -48,3 +48,4 @@ class ServerConfig:
 AC_SERVER_HTTP_PORT = 8081
 AC_SERVER_TCP_PORT = 9600
 AC_SERVER_UDP_PORT = 9600
+AC_SERVER_WRAPPER_PORT = 8082  # Port for ac-server-wrapper (Content Manager file serving)
