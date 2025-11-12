@@ -397,14 +397,17 @@ if [ -n "$WRAPPER_PATH" ]; then
     chown root:root "$WRAPPER_PATH"
     
     PRESET_DIR="/opt/acserver/preset"
-    mkdir -p "$PRESET_DIR/cm_content" "$PRESET_DIR/cfg"
+    mkdir -p "$PRESET_DIR/cfg/cm_content"
     
-    [ -d "$WORKING_DIR/cm_content" ] && cp -r "$WORKING_DIR/cm_content"/* "$PRESET_DIR/cm_content/" 2>/dev/null || [ -d "/opt/acserver/cm_content" ] && cp -r /opt/acserver/cm_content/* "$PRESET_DIR/cm_content/" 2>/dev/null || true
+    # Copy cm_content from cfg/cm_content in the pack
+    [ -d "$WORKING_DIR/cfg/cm_content" ] && cp -r "$WORKING_DIR/cfg/cm_content"/* "$PRESET_DIR/cfg/cm_content/" 2>/dev/null || [ -d "/opt/acserver/cfg/cm_content" ] && cp -r /opt/acserver/cfg/cm_content/* "$PRESET_DIR/cfg/cm_content/" 2>/dev/null || true
     
+    # Look for content.json in cfg/cm_content folder (where it is in Windows packs)
     CONTENT_JSON=""
-    [ -f "$WORKING_DIR/cm_content/content.json" ] && CONTENT_JSON="$WORKING_DIR/cm_content/content.json" || [ -f "/opt/acserver/cm_content/content.json" ] && CONTENT_JSON="/opt/acserver/cm_content/content.json" || [ -f "$WORKING_DIR/content.json" ] && CONTENT_JSON="$WORKING_DIR/content.json" || true
+    [ -f "$WORKING_DIR/cfg/cm_content/content.json" ] && CONTENT_JSON="$WORKING_DIR/cfg/cm_content/content.json" || [ -f "/opt/acserver/cfg/cm_content/content.json" ] && CONTENT_JSON="/opt/acserver/cfg/cm_content/content.json" || true
     
-    [ -n "$CONTENT_JSON" ] && cp "$CONTENT_JSON" "$PRESET_DIR/cm_content/content.json" && sed -i 's|[Cc]:[/\\][^"]*[/\\]||g' "$PRESET_DIR/cm_content/content.json"
+    # Fix Windows paths in content.json: C:\path\to\file.zip -> file.zip
+    [ -n "$CONTENT_JSON" ] && cp "$CONTENT_JSON" "$PRESET_DIR/cfg/cm_content/content.json" && sed -i 's|[Cc]:[/\\][^"]*[/\\]||g' "$PRESET_DIR/cfg/cm_content/content.json"
     
     # Look for existing cm_wrapper_params.json in the pack (should be in cfg folder)
     WRAPPER_PARAMS=""
